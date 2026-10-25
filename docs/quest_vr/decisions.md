@@ -40,6 +40,42 @@ cause was found, because none of them was shown to be needed. They are recorded 
 
 ### 2026-10-25 — Commit identity
 
-Commits use `rookXR <336722952+RookXR@users.noreply.github.com>` (set globally, and
-in Majoras-Mask-VR's local config). **Why:** GitHub rejects pushes that expose the
-account's private email address.
+Commits use `rookXR <336722952+RookXR@users.noreply.github.com>` (set globally).
+**Why:** GitHub rejects pushes that expose the account's private email address.
+
+### 2026-10-25 — Phases 2 and 3a in one step, from BattleShip's 3a code
+
+Ported BattleShip's `port/xr/quest_xr.cpp` as of its Phase 3a commit (`1d5dafa`:
+Phase 2 + 3.0 pacing + stereo cinema screen) rather than its current 6.7k-line
+file, into `src/port/xr/quest_xr.cpp`. **Why:** the owner asked for immersive
+stereo; the 3a file is the smallest proven unit that gives it, and the later
+phases (room view, diorama, hands) depend on game-specific hooks that need
+their own design here.
+
+### 2026-10-25 — Stereo hooks: camera notes by Mtx pointer, eye loop in RunCommands
+
+PaperBoat's interpolation (SoH-style `FrameInterpolation.cpp`) has no tagged
+camera records like BattleShip's, so `cam_main.c` reports each perspective
+camera matrix it writes (`port_xr_note_camera(&camPerspMatrix[id], eye, at)`).
+At draw time `port_xr_eye_replacements` adds a per-eye shifted copy of every
+noted matrix to the present's interpolation map (shifted from the interpolated
+value if the map has one, else decoded from game memory). The eye loop is in
+`GameEngine::RunCommands` (inner loop over eyes per interpolated present). No
+libultraship changes. **Why:** Paper Mario loads view×perspective into the
+projection slot like SSB64's battle camera, so BattleShip's matrix shift applies
+unchanged; keying by pointer keeps the interpolation module untouched.
+Ortho cameras and the HUD camera are not noted and stay at screen depth.
+
+### 2026-10-25 — Touch button mapping
+
+Left stick = stick, right stick = C buttons, A/B = A/B, X = C-down (partner
+ability), Y = L, left trigger/grip = Z (spin dash), right trigger/grip = R,
+left menu = Start. Same virtual Xbox 360 pad trick as BattleShip. No
+`IgnoreVendorIdGlobally` (this libultraship doesn't have it, and feeds every
+recognized pad to port 1 anyway).
+
+### 2026-10-25 — Screen 0.9 m tall at 1.3 m, render 1920×1080 per eye
+
+BattleShip's tuned default screen size/distance; infinity disparity cap scaled
+to 2.5 cm for the smaller screen. PaperBoat's widescreen follows the window, so
+the fixed 16:9 surface gives a widescreen game.

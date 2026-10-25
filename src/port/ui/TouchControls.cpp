@@ -156,6 +156,11 @@ void RegisterCVars() {
 }
 
 bool Enabled() {
+#ifdef PAPERBOAT_QUEST_XR
+    // Immersive VR: nothing on the screen is touchable; Touch controllers
+    // arrive as a gamepad (src/port/xr/quest_xr.cpp).
+    return false;
+#endif
     RegisterCVars();
     return CVarGetInteger(CVAR_TOUCH("Enabled"), TOUCH_CONTROLS_DEFAULT) != 0;
 }

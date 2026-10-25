@@ -2,8 +2,8 @@
 
 Goal (owner): play Paper Mario (PaperBoat port) on a standalone Quest 3 with the
 levels floating in the room in stereoscopic 3D, like the SSB64 Quest port in the
-sibling repo `../BattleShip`. Path: 2D APK → immersive OpenXR
-screen with Touch input → stereo → passthrough / diorama.
+sibling repo BattleShip (checked out next to this one, `../BattleShip`). Path: 2D
+APK → immersive OpenXR screen with Touch input → stereo → passthrough / diorama.
 
 ## Resuming in a new session
 
@@ -21,8 +21,9 @@ screen with Touch input → stereo → passthrough / diorama.
 | Phase | Scope | Status |
 |-------|-------|--------|
 | 1 | Stock Android APK running on Quest as a 2D panel | **Done 2026-10-25.** Renders correctly after the libultraship pointer-tag fix. Touch controllers can't drive the game in 2D mode. |
-| 2 | Immersive OpenXR app: game on a floating quad + Touch controller input | Not started — next. |
-| 3 | Stereo 3D (per-eye camera matrices) | Not started. |
+| 2 | Immersive OpenXR app: game on a floating quad + Touch controller input | **Done, verified on device 2026-10-25.** `-Ppaperboat.quest=true`; 0.9 m screen at 1.3 m, 1920×1080/eye, 120 Hz, display-clock pacing (30.0 presents/s, 0 resyncs). Owner played to the first save point. |
+| 3a | Stereo cinema screen (per-eye camera matrices, one quad per eye) | **Done, verified on device 2026-10-25.** Owner: looks and feels good. Self-check passes. |
+| 3b | Stereo polish: 2D map backgrounds at infinity, CPU-projected sprites, projection-load inventory | Not started — next. Backgrounds currently sit at screen depth (owner noticed). |
 | 4+ | Passthrough, diorama / room view, interaction | Not started. |
 
 ## Repos and branches

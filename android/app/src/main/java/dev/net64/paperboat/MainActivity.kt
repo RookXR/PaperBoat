@@ -46,7 +46,23 @@ class MainActivity : SDLActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         goFullscreen()
-        addModsButton()
+        // The Quest build runs immersive, where nothing on the Android surface
+        // is visible or touchable.
+        if (!BuildConfig.QUEST_XR) {
+            addModsButton()
+        }
+    }
+
+    /**
+     * Quest: pin SDL's surface to the size the game renders at in VR. The
+     * immersive activity's surface otherwise spans both eye panels (~1.87:1),
+     * the wrong aspect and far more pixels than the virtual screen shows.
+     * surfaceChanged then reports the fixed size to SDL as a window resize.
+     * Called from native code on the SDL thread (src/port/xr/quest_xr.cpp).
+     */
+    @Suppress("unused")
+    fun setXrRenderSize(width: Int, height: Int) {
+        runOnUiThread { mSurface?.holder?.setFixedSize(width, height) }
     }
 
     /**
@@ -70,8 +86,14 @@ class MainActivity : SDLActivity() {
         }
     }
 
+    /**
+     * Quest: in an immersive activity the 2D window never gains focus, and
+     * SDLActivity pauses the native thread on focus loss — which would freeze
+     * the game before its first frame. The OpenXR session state gates input
+     * instead.
+     */
     override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
+        super.onWindowFocusChanged(BuildConfig.QUEST_XR || hasFocus)
         // The bars return on any focus loss; put them away again coming back.
         if (hasFocus) {
             goFullscreen()
@@ -93,7 +115,14 @@ class MainActivity : SDLActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacks(menuWatcher)
+        val finishing = isFinishing && !isChangingConfigurations
         super.onDestroy()
+        // Quest: the OpenXR instance/session and the virtual Touch gamepad are
+        // process-lifetime statics tied to this SDL run. End the process once
+        // the game has shut down so a relaunch starts from a clean slate.
+        if (BuildConfig.QUEST_XR && finishing) {
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
     }
 
     /**
@@ -101,6 +130,7 @@ class MainActivity : SDLActivity() {
      * close itself, so ask the engine rather than track it here.
      */
     private fun syncMenuState() {
+        if (!::modsButton.isInitialized) return
         val open = runCatching { isMenuOpen() }.getOrDefault(false)
         if (open == menuOpen) return
 

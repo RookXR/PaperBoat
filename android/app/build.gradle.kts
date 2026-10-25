@@ -30,6 +30,14 @@ val keystoreProperties = Properties().apply {
 val hasReleaseKeystore =
     keystoreProperties.getProperty("storeFile") != null || System.getenv("KEYSTORE_FILE") != null
 
+// Meta Quest VR build: -Ppaperboat.quest=true. Runs the game activity as an
+// immersive OpenXR app (stereo screen + Touch controller input,
+// src/port/xr/quest_xr.cpp). Off by default, so phone/tablet APKs are
+// unchanged. Same applicationId either way, so a Quest that already extracted
+// the ROM with the 2D build keeps its pm64.o2r.
+val paperboatQuest: Boolean =
+    (project.findProperty("paperboat.quest") as String?)?.toBoolean() ?: false
+
 /**
  * Everything the device needs that is not the ROM, in one zip inside the APK:
  * Torch's recipes (config.yml + assets/) and the engine's own paperboat.o2r.
@@ -152,6 +160,14 @@ android {
         versionCode = 1
         versionName = projectVersion
 
+        buildConfigField("boolean", "QUEST_XR", paperboatQuest.toString())
+        // Category on MainActivity's MAIN intent-filter. Horizon OS runs an
+        // activity carrying IMMERSIVE_HMD in VR instead of a 2D panel; on other
+        // builds the filter is an inert MAIN/DEFAULT pair.
+        manifestPlaceholders["gameActivityCategory"] =
+            if (paperboatQuest) "org.khronos.openxr.intent.category.IMMERSIVE_HMD"
+            else "android.intent.category.DEFAULT"
+
         ndk {
             // 64-bit only; a second ABI roughly doubles an already long
             // native build. Add "armeabi-v7a" if you need 32-bit devices.
@@ -170,7 +186,8 @@ android {
                     // carry -fno-strict-aliasing, and the game's C needs it:
                     // at -O2 aliasing miscompiles it into graphical glitches.
                     // The plugin otherwise builds release as RelWithDebInfo.
-                    "-DCMAKE_BUILD_TYPE=Release"
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DPAPERBOAT_QUEST_XR=${if (paperboatQuest) "ON" else "OFF"}"
                 )
                 targets += "Paperboat"
             }
@@ -229,6 +246,12 @@ android {
     lint {
         abortOnError = false
     }
+
+    buildFeatures {
+        buildConfig = true
+        // Quest: consume the OpenXR loader AAR's prefab package from CMake.
+        prefab = paperboatQuest
+    }
 }
 
 kotlin {
@@ -240,4 +263,9 @@ kotlin {
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-ktx:1.9.3")
+
+    // Khronos OpenXR loader (prefab: OpenXR::openxr_loader). Quest build only.
+    if (paperboatQuest) {
+        implementation("org.khronos.openxr:openxr_loader_for_android:1.1.60")
+    }
 }

@@ -29,3 +29,29 @@ what was learned, where we stopped. Details belong in the other docs.
 - Leftover diagnostic dump files on the headset (see `known_issues.md`).
 
 **Next:** Phase 2 — immersive OpenXR screen + Touch input (`open_tasks.md`).
+
+---
+
+## 2026-10-25 — Phases 2 + 3a: immersive OpenXR stereo screen, Touch input
+
+**Done**
+- Ported BattleShip's Phase 3a `quest_xr.cpp` (Phase 2 + 3.0 + 3a) to
+  `src/port/xr/quest_xr.cpp`, behind `-Ppaperboat.quest=true` / `PAPERBOAT_QUEST_XR`.
+  Gradle, CMake, manifest and `MainActivity` changes as in BattleShip.
+- Stereo: `cam_main.c` notes each perspective camera matrix
+  (`port_xr_note_camera`); `GameEngine::RunCommands` draws each present once per
+  eye with `port_xr_eye_replacements`. No libultraship changes.
+- Touch mapping chosen for Paper Mario (X = C-down partner ability, see
+  `decisions.md`). Engine touch overlay and Mods button off in Quest builds.
+- On device: OpenXR ready, 120 Hz granted, 1920×1080 per eye, 30.0 presents/s with
+  exactly 3 repeat frames each, 0 resyncs; stereo self-check at-plane error 1.7e-08,
+  far-point disparity as predicted. Owner played to the first save point:
+  "looked and felt good" apart from the 2D background at screen depth.
+- Removed personal details from the docs (LAN IP, local paths, ROM location,
+  private email). Note: they remain in the history of the earlier docs commit.
+
+**State at end of session**
+- Branch `quest-xr` committed and pushed to `rookxr`. libultraship unchanged.
+- Installed APK on the headset = this Quest build.
+
+**Next:** Phase 3b — backgrounds at infinity first (`open_tasks.md`).

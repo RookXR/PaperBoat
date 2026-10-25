@@ -8,6 +8,7 @@
 #include "port/build.h"
 #include "port/enhancements/PortEnhancements.h"
 #include "port/interpolation/FrameInterpolation.h"
+#include "port/xr/quest_xr.h"
 #include "port/ui/cvar_prefixes.h"
 #include "port/audio/AudioVolume.h"
 #include "port/os/OS.h"
@@ -1094,7 +1095,18 @@ void GameEngine::RunCommands(Gfx* Commands, const std::vector<std::unordered_map
             interpreter->mInterpolationIndex++;
             continue;
         }
-        wnd->DrawAndRunGraphicsCommands(Commands, mtx_replacements[i], {});
+        // Quest stereo draws each present once per eye, with that eye's camera
+        // matrices; the right eye's swap submits the pair as one XR frame
+        // (src/port/xr/quest_xr.cpp).
+        if (port_xr_stereo_active()) {
+            for (int eye = 0; eye < 2; eye++) {
+                port_xr_set_eye(eye);
+                wnd->DrawAndRunGraphicsCommands(Commands, port_xr_eye_replacements(mtx_replacements[i], eye), {});
+            }
+            port_xr_set_eye(-1);
+        } else {
+            wnd->DrawAndRunGraphicsCommands(Commands, mtx_replacements[i], {});
+        }
         OS_ViNotifyPresent();
         interpreter->mInterpolationIndex++;
     }
@@ -1138,7 +1150,17 @@ void GameEngine::ProcessGfxCommands(Gfx* commands) {
     time -= fps;
 
     if (wnd != nullptr) {
-        wnd->SetTargetFps(GetInterpolationFPS());
+        // On Quest the headset's display clock can pace presents instead
+        // (xrWaitFrame), and then the limiter must not sleep as well. In
+        // stereo the limiter paces two swaps (one per eye) per present.
+        port_xr_set_present_rate(fps);
+        int limiterFps = GetInterpolationFPS();
+        if (port_xr_paces_frames()) {
+            limiterFps = 1000;
+        } else if (port_xr_stereo_active()) {
+            limiterFps *= 2;
+        }
+        wnd->SetTargetFps(limiterFps);
         wnd->SetMaximumFrameLatency(1);
     }
     RunCommands(commands, mtx_replacements);

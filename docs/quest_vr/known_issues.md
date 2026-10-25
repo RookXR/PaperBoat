@@ -2,14 +2,23 @@
 
 ## Open
 
-### Touch controllers don't control the game in 2D mode
-As a 2D panel app, Horizon OS uses the Touch controllers as laser pointers, not
-gamepads. Only a Bluetooth gamepad or the on-screen touch overlay work. Fixed by
-Phase 2 (OpenXR actions → virtual SDL gamepad), as in BattleShip.
-**Watch for:** Horizon OS also exposes the Touch controllers as Android gamepads
-(vendor `0x2833`) that take player ports before the virtual pad; BattleShip fixed it
-with `IgnoreVendorIdGlobally(0x2833)` before attaching its pad. The log already shows
-`SDL Joystick (GUID: 05007e98416e64726f69642000000300) not recognized as gamepad`.
+### 2D map backgrounds sit at screen depth in stereo
+The sky/background image is drawn as screen-space texture rectangles, so both eyes
+see it at zero parallax, while 3D scenery behind the convergence plane appears
+behind the screen — in front of the background in depth but drawn over by
+nothing. Owner noticed it (2026-10-25). Fix planned in `open_tasks.md` (Phase 3b).
+
+### Touch controllers don't control the game in the phone (2D) build
+Only the Quest build (`-Ppaperboat.quest=true`) reads them, through OpenXR. In the
+2D panel build they are laser pointers. Horizon OS's own Touch "gamepads" (vendor
+`0x2833`, GUID `05007e98416e64726f69642000000300`) aren't recognized by SDL as
+gamepads, and this libultraship feeds every recognized pad to port 1, so they
+don't take the port as they did in BattleShip.
+
+### Phone APK touch overlay / Mods button are off in the Quest build
+Intended (nothing on the Android surface is visible in immersive mode). Not yet
+checked whether the engine's ImGui menu can still be opened in VR (on phones it
+has an on-screen toggle); the virtual pad has no Back/Select button mapped.
 
 ### Leftover diagnostic files on the headset
 `files/logs/td_*.rgba` (~5 MB, ~800 files) from the 2026-10-25 texture dump. adb

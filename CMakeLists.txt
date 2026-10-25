@@ -62,6 +62,13 @@ if(ANDROID)
     add_compile_definitions(USE_OPENGLES=1)
 endif()
 
+# Meta Quest OpenXR presentation, stereo and Touch input (src/port/xr/). Set by
+# Gradle when building with -Ppaperboat.quest=true.
+option(PAPERBOAT_QUEST_XR "Build the Meta Quest OpenXR layer (Android only)" OFF)
+if(PAPERBOAT_QUEST_XR AND NOT ANDROID)
+    message(FATAL_ERROR "PAPERBOAT_QUEST_XR is only supported for Android builds")
+endif()
+
 set(NATO_PHONETIC_ALPHABET
   "Alfa" "Bravo" "Charlie" "Delta" "Echo" "Foxtrot" "Golf" "Hotel"
   "India" "Juliett" "Kilo" "Lima" "Mike" "November" "Oscar" "Papa"
@@ -486,6 +493,17 @@ if(ANDROID)
         target_include_directories(${PROJECT_NAME} PRIVATE ${libzip_SOURCE_DIR}/lib ${libzip_BINARY_DIR})
     endif()
     target_link_libraries(${PROJECT_NAME} PRIVATE libzip::zip GLESv3 EGL android log)
+
+    if(PAPERBOAT_QUEST_XR)
+        # The OpenXR loader arrives through its prefab AAR (see build.gradle.kts).
+        find_package(OpenXR REQUIRED CONFIG)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE PAPERBOAT_QUEST_XR=1)
+        target_link_libraries(${PROJECT_NAME} PRIVATE OpenXR::openxr_loader)
+        # Route libultraship's SDL_GL_SwapWindow (statically linked into
+        # libmain.so) through src/port/xr/quest_xr.cpp, which presents the
+        # frame to OpenXR instead of the uncomposited Android surface.
+        target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=SDL_GL_SwapWindow")
+    endif()
 endif()
 
 if(EMSCRIPTEN)

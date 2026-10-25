@@ -5,6 +5,7 @@
 #include "dx/profiling.h"
 #include "port/Engine.h"
 #include "port/interpolation/FrameInterpolation.h"
+#include "port/xr/quest_xr.h"
 
 void render_models(void);
 void execute_render_tasks(void);
@@ -193,6 +194,11 @@ void render_frame(s32 isSecondPass) {
             FrameInterpolation_RecordOpenChild("camera_persp", 0);
             guMtxF2L(camera->mtxPerspective, &gDisplayContext->camPerspMatrix[gCurrentCamID]);
             FrameInterpolation_RecordCloseChild();
+            if (!(camera->flags & CAMERA_FLAG_ORTHO)) {
+                // Quest stereo shifts this matrix per eye (no-op elsewhere).
+                port_xr_note_camera(&gDisplayContext->camPerspMatrix[gCurrentCamID], &camera->lookAt_eye.x,
+                                    &camera->lookAt_obj.x);
+            }
             gSPMatrix(gMainGfxPos++, &gDisplayContext->camPerspMatrix[gCurrentCamID], G_MTX_NOPUSH | G_MTX_LOAD |
                         G_MTX_PROJECTION);
         }

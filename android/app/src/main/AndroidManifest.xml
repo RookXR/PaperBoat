@@ -45,6 +45,13 @@
             android:name="SDL_ENV.SDL_ANDROID_TRAP_BACK_BUTTON"
             android:value="1" />
 
+        <!-- Meta Quest: without this, Horizon OS runs the app in a legacy
+             compatibility mode (72 Hz, and XR_FB_display_refresh_rate offers
+             no rates). Ignored on phones and tablets. -->
+        <meta-data
+            android:name="com.oculus.supportedDevices"
+            android:value="quest2|questpro|quest3|quest3s" />
+
         <!-- SDL overrides screenOrientation when its video subsystem starts,
              promoting a resizable window to FULL_USER. Naming both landscapes
              pins it while still allowing either way up. -->
@@ -79,6 +86,16 @@
             <!-- Let Android know that we can handle some USB devices and should receive this event -->
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+
+            <!-- Quest build (-Ppaperboat.quest=true): the placeholder becomes
+                 OpenXR's IMMERSIVE_HMD category, so Horizon OS runs this
+                 activity in VR rather than as a 2D panel. LauncherActivity
+                 stays a 2D panel for the ROM picker. Elsewhere it is
+                 MAIN/DEFAULT, which has no effect on a non-exported activity. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="${gameActivityCategory}" />
             </intent-filter>
         </activity>
 

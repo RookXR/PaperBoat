@@ -11,9 +11,16 @@
 ## Build
 
 ```bash
-cd android && ./gradlew.bat --no-daemon assembleDebug
+# Quest VR build (immersive OpenXR, stereo, Touch input):
+cd android && ./gradlew.bat --no-daemon assembleDebug -Ppaperboat.quest=true
+# Without the property: the stock phone APK (2D panel on Quest).
 # → android/app/build/outputs/apk/debug/app-debug.apk (~42 MB, arm64 only)
 ```
+
+- Switching between Quest and phone builds changes a CMake option, so the
+  native tree reconfigures and rebuilds (full-build time).
+- XR log: `adb logcat -s paperboat.xr` (OpenXR init, session state, swapchain,
+  `Pacing:` every 5 s, `Stereo check:` every ~300 presents).
 
 - First build ~9 min; touching one libultraship file ~30 s; a change that alters
   compile flags for every TU ~5–9 min.
