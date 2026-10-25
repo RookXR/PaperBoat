@@ -42,6 +42,27 @@ commit the submodule pointer bump in PaperBoat and push to `rookxr`.
 Commit email is the GitHub no-reply address
 `336722952+RookXR@users.noreply.github.com` (the private address is rejected on push).
 
+## Before pushing: no personal info
+
+The forks are public. Docs, comments and commit messages must not contain the
+owner's local file paths (Windows user folder, drive letters), LAN IP addresses
+(the headset's wireless-adb address), ROM locations, or private email addresses.
+Write `<repo>`, `<headset-ip>` and relative paths instead. The GitHub no-reply
+address above is fine. Keep machine-specific values out of the repo (local notes
+or the assistant's memory are the place for them).
+
+The check is automatic on the owner's machine: a `pre-push` hook (in this repo
+and in `external/libultraship`) scans the commits being pushed, contents and
+messages, against a list of patterns and refuses the push on a match. The hook
+and the pattern list live under `.git/` (`hooks/pre-push`, `info/private-patterns`),
+so they are never committed — the patterns themselves are personal info. On a
+fresh clone they don't exist: re-create them (ask the owner for the values)
+before pushing, or review the diff by hand.
+
+If the hook blocks a push, fix the commits (amend, or rewrite older ones) and
+push again. Never bypass it with `--no-verify`. If something was already pushed,
+rewrite the affected commits and force-push (done once, 2026-10-25).
+
 ## Files in this folder
 
 | File | Purpose |

@@ -48,10 +48,15 @@ what was learned, where we stopped. Details belong in the other docs.
   far-point disparity as predicted. Owner played to the first save point:
   "looked and felt good" apart from the 2D background at screen depth.
 - Removed personal details from the docs (LAN IP, local paths, ROM location,
-  private email). Note: they remain in the history of the earlier docs commit.
+  private email), then rewrote the two affected commits (`filter-branch` with a
+  literal-replacement script) and force-pushed `quest-xr`, so they are gone from
+  the branch history too. Added a local `pre-push` hook (PaperBoat and
+  libultraship) that refuses pushes matching an untracked pattern list under
+  `.git/`, documented in `CLAUDE.md` and `README.md`.
 
 **State at end of session**
-- Branch `quest-xr` committed and pushed to `rookxr`. libultraship unchanged.
+- Branch `quest-xr` committed and force-pushed to `rookxr` (history rewritten).
+  libultraship unchanged.
 - Installed APK on the headset = this Quest build.
 
 **Next:** Phase 3b — backgrounds at infinity first (`open_tasks.md`).

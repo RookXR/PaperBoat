@@ -14,3 +14,10 @@ add a `session_log.md` entry, update the status table in `README.md`,
 Work on branch `quest-xr`. Push PaperBoat to the `rookxr` remote and libultraship
 (`external/libultraship`) to its `origin` (the RookXR fork); `origin` of this repo is
 upstream HarbourMasters and is not pushed to.
+
+**Before every push, check that nothing personally identifying is committed** — in
+docs, code comments, or commit messages: local file paths (user name, drive
+letters), LAN IPs, ROM locations, private email addresses. Use placeholders such
+as `<repo>` and `<headset-ip>`. A local `pre-push` hook enforces it; see
+[`docs/quest_vr/README.md`](docs/quest_vr/README.md) → "Before pushing". Never write
+the hook's patterns into tracked files.
