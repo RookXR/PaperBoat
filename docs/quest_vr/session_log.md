@@ -60,3 +60,27 @@ what was learned, where we stopped. Details belong in the other docs.
 - Installed APK on the headset = this Quest build.
 
 **Next:** Phase 3b — backgrounds at infinity first (`open_tasks.md`).
+
+---
+
+## 2026-11-01 — Phase 3p (passthrough, cut-out) and 3e room view (follow camera)
+
+**Done**
+- Passthrough underlay and diorama cut-out. First device try was upside down
+  (this libultraship's game texture is bottom-left origin, unlike BattleShip's)
+  and smeared where the sky was (game frames only cleared depth); both fixed.
+  Owner: floats over the room cleanly; pause menu and battles correct.
+- Room view with the follow camera (projection layer, per-eye matrices from the
+  head pose). Owner: "pretty good", walked up to the stage, got through a battle.
+  `Room check` NDC error ~1e-7; viewport 0,20-320,220 (letterbox) handled; 30.00
+  presents/s, 0 resyncs.
+- Owner chose to have both the follow camera and a fixed dollhouse camera,
+  switchable; follow first.
+
+**State at end of session**
+- libultraship `quest-xr`: `8b9360c1` (`LUS_GL_GAME_FB_ALPHA`). PaperBoat `quest-xr`:
+  `dbc0e5f23` (3p), `379001e11` (room view), plus this docs commit. Not pushed yet.
+- Installed APK on the headset = the room view build.
+
+**Next:** HUD on its own panel (unreadable, head-locked), then the dollhouse
+camera toggle (`open_tasks.md`).

@@ -17,7 +17,38 @@ table in `README.md`.
       `GameEngine::RunCommands`, two quads (LEFT/RIGHT), self-check in the log.
 - [x] Verified on device: screen, controls, pacing, depth (owner, to the first save point).
 
-## Next up — Phase 3b: stereo polish
+## Done — Phase 3p + 3e follow-camera room view (2026-11-01)
+
+- [x] Passthrough underlay (`XR_FB_passthrough`, manifest feature, `gXrPassthrough`).
+- [x] Cut-out: `background_gfx.c` skips backdrop/letterbox when
+      `port_xr_background_cutout` says so; `gfx_frame.c` tells the XR layer which
+      frame is drawn (`port_xr_frame_background`). libultraship `LUS_GL_GAME_FB_ALPHA`
+      (RGBA8 game FB, clear to alpha 0 each frame, "over" alpha, always draw to the FB).
+      Eye images copied from the game texture with alpha; quads/projection blend.
+- [x] Room view (`gXrRoomView`, follow camera): `RoomEyeMatrix`, projection layer,
+      `Room check` log. Placement CVars `gXrRoomDistance` / `gXrRoomHeight` /
+      `gXrRoomUnitsPerMeter`.
+
+## Next up — room view polish (owner chose "both, switchable", 2026-11-01)
+
+- [ ] **HUD on its own panel.** In the room view the HUD (HP/FP/coins, battle menus)
+      is screen-space texrects in each eye's image: head-locked, at the edge of a
+      widened field of view, unreadable (owner). Needs the HUD separated from the
+      scene: BattleShip Phase 6 drew its HUD into its own Fast3D framebuffer
+      (decomp brackets + `G_SETFB`) and showed it on a quad. In PaperBoat the HUD is
+      drawn after `render_frame(false)` in `gfx_draw_frame` (`main_loop.c`).
+- [ ] **Fixed "dollhouse" camera per map** as a toggle (owner's choice "both"):
+      camera fixed on the map's bounds so the area stands still on the table and
+      Mario walks inside it; fallback to follow for maps that don't fit.
+- [ ] Smoothness: 30 fps means head translation judders between presents
+      (rotation-only reprojection). BattleShip fixed it with 120 fps frame
+      interpolation + `XR_EXT_performance_settings`. Not yet reported by the owner.
+- [ ] Sharpness: the 16:9 render target wastes ~half its pixels on the widened fov
+      (`L eye fov x -2.40..1.86`). BattleShip: eye-shaped render target +
+      `LUS_WIDESCREEN_ALLOW_NARROW`.
+- [ ] Tuning: scale / distance / height over adb (`paperboat.cfg.json`).
+
+## Phase 3b leftovers (window mode only)
 
 - [ ] **2D map backgrounds at infinity.** `background.c` `appendGfx_background_texture`
       (via `background_gfx.c` `gfx_draw_background` / `port_appendGfx_background_texture`)

@@ -2,11 +2,15 @@
 
 ## Open
 
-### 2D map backgrounds sit at screen depth in stereo
-The sky/background image is drawn as screen-space texture rectangles, so both eyes
-see it at zero parallax, while 3D scenery behind the convergence plane appears
-behind the screen — in front of the background in depth but drawn over by
-nothing. Owner noticed it (2026-10-25). Fix planned in `open_tasks.md` (Phase 3b).
+### HUD is head-locked and unreadable in the room view
+The HUD and battle menus are screen-space texrects, drawn into each eye's image at
+the same spot: they ride on the face, at the edge of the widened field of view, too
+big/close to read (owner, 2026-11-01). Fix: HUD on its own panel (`open_tasks.md`).
+
+### 2D map backgrounds sit at screen depth in stereo (window mode only)
+With passthrough and the cut-out (default) there is no backdrop in fields and
+battles. With `gXrDiorama` 0 or no passthrough, the sky is screen-space texrects at
+zero parallax (owner noticed 2026-10-25).
 
 ### Touch controllers don't control the game in the phone (2D) build
 Only the Quest build (`-Ppaperboat.quest=true`) reads them, through OpenXR. In the

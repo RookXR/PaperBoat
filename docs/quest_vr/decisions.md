@@ -79,3 +79,25 @@ recognized pad to port 1 anyway).
 BattleShip's tuned default screen size/distance; infinity disparity cap scaled
 to 2.5 cm for the smaller screen. PaperBoat's widescreen follows the window, so
 the fixed 16:9 surface gives a widescreen game.
+
+### 2026-11-01 — Cut-out decided per frame by the game, alpha kept by libultraship
+
+The backdrop is skipped in `gfx_draw_background`'s default case (fields, battles)
+rather than hidden after the fact, and the decision is remembered per background
+display list so the render thread presents exactly the frames that were built
+without one (`port_xr_background_cutout` / `port_xr_frame_background`). libultraship
+gets an opt-in `LUS_GL_GAME_FB_ALPHA` (Quest build only): RGBA8 game framebuffer,
+"over" alpha blending, color cleared to alpha 0 at the start of every game frame
+(this libultraship only cleared depth, so without it old frames smeared where the
+backdrop used to be), and the game always draws into its framebuffer so its
+texture can be read. **Why:** same approach as BattleShip 3p, proven; a fill rect
+can't clear alpha (Fast3D's opaque shader writes alpha 1).
+
+### 2026-11-01 — Room view: follow camera first, dollhouse camera later as a toggle
+
+Owner's choice ("both, switchable"). The follow-camera room view maps the world
+into the room by the noted camera's look-at point and heading (level, fixed
+scale), not by decoding the matrix's view: Paper Mario passes eye/at with each
+camera note anyway. The per-eye matrix is built in double from the images of the
+origin and unit axes (the map is affine), keeping the game's depth mapping, and
+the eye fov is widened across so pixels stay square (screen-space sprites/HUD).

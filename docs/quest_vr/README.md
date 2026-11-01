@@ -23,8 +23,10 @@ APK → immersive OpenXR screen with Touch input → stereo → passthrough / di
 | 1 | Stock Android APK running on Quest as a 2D panel | **Done 2026-10-25.** Renders correctly after the libultraship pointer-tag fix. Touch controllers can't drive the game in 2D mode. |
 | 2 | Immersive OpenXR app: game on a floating quad + Touch controller input | **Done, verified on device 2026-10-25.** `-Ppaperboat.quest=true`; 0.9 m screen at 1.3 m, 1920×1080/eye, 120 Hz, display-clock pacing (30.0 presents/s, 0 resyncs). Owner played to the first save point. |
 | 3a | Stereo cinema screen (per-eye camera matrices, one quad per eye) | **Done, verified on device 2026-10-25.** Owner: looks and feels good. Self-check passes. |
-| 3b | Stereo polish: 2D map backgrounds at infinity, CPU-projected sprites, projection-load inventory | Not started — next. Backgrounds currently sit at screen depth (owner noticed). |
-| 4+ | Passthrough, diorama / room view, interaction | Not started. |
+| 3b | Stereo polish: 2D map backgrounds at infinity, CPU-projected sprites, projection-load inventory | Backgrounds: superseded by 3p (no backdrop in cut-out scenes). Rest not started. |
+| 3p | Passthrough + diorama cut-out | **Done, verified on device 2026-11-01.** Room around the screen (`gXrPassthrough`); field and battle scenes draw no backdrop and float over the room (`gXrDiorama`). Menus, pause, title opaque. Needs libultraship `LUS_GL_GAME_FB_ALPHA`. |
+| 3e | Room view: the scene as an object in the room | **Follow-camera version done, verified on device 2026-11-01** (`gXrRoomView`): per-eye matrices from the tracked head pose, projection layer, world level and at 300 units/m, camera look-at 1.0 m ahead / 0.35 m below eye level. Owner: "pretty good", walked up to it, played a battle. HUD still head-locked and unreadable. Fixed "dollhouse" camera per map: next, as a toggle. |
+| 4+ | HUD panel, dollhouse camera, interaction | Not started. |
 
 ## Repos and branches
 
