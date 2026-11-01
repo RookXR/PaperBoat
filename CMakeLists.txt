@@ -503,6 +503,10 @@ if(ANDROID)
         # libmain.so) through src/port/xr/quest_xr.cpp, which presents the
         # frame to OpenXR instead of the uncomposited Android surface.
         target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=SDL_GL_SwapWindow")
+        # Keep the game's alpha (RGBA8 game framebuffer cleared to alpha 0, "over"
+        # alpha blending) so the passthrough cut-out can show the room wherever
+        # the scene draws nothing. Opt-in, so phone and desktop builds are unchanged.
+        target_compile_definitions(libultraship PRIVATE LUS_GL_GAME_FB_ALPHA=1)
     endif()
 endif()
 

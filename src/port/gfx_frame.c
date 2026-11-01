@@ -6,6 +6,7 @@
 #include "port/interpolation/FrameInterpolation.h"
 #include "port/os/OS.h"
 #include "port/patches/Patches.h"
+#include "port/xr/quest_xr.h"
 
 extern void gfxRetrace_Callback(s32 gfxTaskNum);
 extern void gfxPreNMI_Callback(void);
@@ -84,6 +85,7 @@ void Graphics_DrawFrame(Gfx* backgroundList, Gfx* mainList, s32 capturePrevFrame
     gDPFullSync(g++);
     gSPEndDisplayList(g++);
 
+    port_xr_frame_background(backgroundList);
     GameEngine_ProcessGfxCommands(sMasterList);
 }
 

@@ -23,6 +23,19 @@
 //   submits one quad layer per eye at the same screen pose. Flat presents
 //   (eye -1) use the left half for both eyes.
 //
+// Passthrough (gXrPassthrough, default on): when the runtime offers
+//   XR_FB_passthrough, a passthrough layer is submitted under the screen, so
+//   the room is visible around it.
+//
+// Diorama cut-out (gXrDiorama, default on, needs passthrough): field and
+//   battle scenes draw no backdrop (background_gfx.c asks
+//   port_xr_background_cutout), so the game framebuffer stays at alpha 0
+//   wherever the scene draws nothing (libultraship's LUS_GL_GAME_FB_ALPHA,
+//   set for the Quest build: RGBA8 game framebuffer cleared to alpha 0).
+//   The eye images are copied from the game framebuffer's texture with their
+//   alpha, and the quads blend over the room. Frames with a backdrop (menus,
+//   pause, title) stay opaque.
+//
 // Input:
 //   Touch controllers are read through OpenXR actions (the system does not
 //   deliver them to the app as gamepads in immersive mode) and pushed into an
@@ -44,6 +57,8 @@
 #include <SDL2/SDL_system.h>
 
 #include <libultraship/bridge/consolevariablebridge.h>
+#include <ship/Context.h>
+#include <ship/window/Window.h>
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
@@ -58,6 +73,7 @@
 #include "quest_xr.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -115,7 +131,23 @@ constexpr float kDefaultConvergence = 0.85f;
 // BattleShip's 5 cm on a 3.2 m screen.
 constexpr float kMaxInfinityDisparity = 0.025f; // m
 
+// Room and cut-out switches, read live.
+constexpr const char* kPassthroughCVar = "gXrPassthrough"; // room visible around the screen
+constexpr const char* kDioramaCVar = "gXrDiorama";         // scenes float in the room (needs passthrough)
+constexpr const char* kAlphaViewCVar = "gXrAlphaView";     // debug: show the game's alpha as grey
+
 enum class Mode { Untried, Active, Disabled };
+
+struct PassthroughFns {
+    PFN_xrCreatePassthroughFB create = nullptr;
+    PFN_xrDestroyPassthroughFB destroy = nullptr;
+    PFN_xrPassthroughStartFB start = nullptr;
+    PFN_xrPassthroughPauseFB pause = nullptr;
+    PFN_xrCreatePassthroughLayerFB createLayer = nullptr;
+    PFN_xrDestroyPassthroughLayerFB destroyLayer = nullptr;
+    PFN_xrPassthroughLayerResumeFB resumeLayer = nullptr;
+    PFN_xrPassthroughLayerPauseFB pauseLayer = nullptr;
+};
 
 struct InputActions {
     XrActionSet set = XR_NULL_HANDLE;
@@ -152,6 +184,24 @@ struct QuestXr {
     bool srgbWriteControl = false;
     bool hasImage = false;    // a swapchain image has been released and can be re-shown
     bool imageStereo = false; // ...and its halves are a left/right pair, not one flat image
+    bool imageCutout = false; // ...and it was drawn without a backdrop (alpha = coverage)
+
+    // Copy from the game framebuffer's texture, keeping its alpha (CopyGameEye).
+    GLuint copyProgram = 0, copyVao = 0;
+    GLint copyAlphaViewLoc = -1;
+    GLuint loggedCopyTexture = 0;
+
+    // Passthrough (XR_FB_passthrough): created once when first wanted, then
+    // paused/resumed to follow gXrPassthrough. Any error turns it off for
+    // the rest of the process.
+    bool passthroughExt = false;
+    bool passthroughRunning = false;
+    bool passthroughFailed = false;
+    XrPassthroughFB passthrough = XR_NULL_HANDLE;
+    XrPassthroughLayerFB passthroughLayer = XR_NULL_HANDLE;
+
+    // The frame being drawn has no backdrop (port_xr_frame_background).
+    bool cutoutDraw = false;
 
     // Stereo: the eye the render loop is drawing (-1 = flat), and the left
     // eye's image, held until the right eye's swap submits both.
@@ -182,6 +232,15 @@ QuestXr gXr;
 // has one per camera.
 std::mutex gCameraMutex;
 std::unordered_map<const void*, CameraNote> gCameras;
+
+// Whether each background display list (one per display context) was built
+// without its backdrop, noted by the game thread (port_xr_background_cutout)
+// and looked up when the frame is drawn (port_xr_frame_background).
+std::mutex gBackgroundMutex;
+std::unordered_map<const void*, bool> gBackgroundCutout;
+
+// Read by the game thread while it builds a frame.
+std::atomic<bool> gCutoutAvailable{ false };
 
 bool Ok(XrResult result, const char* what) {
     if (XR_SUCCEEDED(result)) {
@@ -262,6 +321,12 @@ bool CreateInstance() {
     gXr.refreshRateExt = HasInstanceExtension(available, XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
     if (gXr.refreshRateExt) {
         extensions.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+    }
+    gXr.passthroughExt = HasInstanceExtension(available, XR_FB_PASSTHROUGH_EXTENSION_NAME);
+    if (gXr.passthroughExt) {
+        extensions.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
+    } else {
+        LOGI("Runtime lacks %s; no passthrough", XR_FB_PASSTHROUGH_EXTENSION_NAME);
     }
 
     XrInstanceCreateInfoAndroidKHR androidInfo{ XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR };
@@ -751,6 +816,156 @@ void BlitEye(GLuint readFbo, int srcW, int srcH, GLuint drawFbo, int dstX) {
     glBlitFramebuffer(0, 0, srcW, srcH, dstX, 0, dstX + gXr.width, gXr.height, GL_COLOR_BUFFER_BIT, GL_LINEAR);
 }
 
+// Saves the GL state a shader draw changes and restores it on scope exit
+// (used inside a BlitState, which covers framebuffers, scissor and sRGB).
+class DrawState {
+  public:
+    DrawState() {
+        glGetIntegerv(GL_CURRENT_PROGRAM, &mProgram);
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &mVao);
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &mActiveTexture);
+        glActiveTexture(GL_TEXTURE0);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &mTexture0);
+        glGetIntegerv(GL_SAMPLER_BINDING, &mSampler0);
+        glGetIntegerv(GL_VIEWPORT, mViewport);
+        glGetBooleanv(GL_COLOR_WRITEMASK, mColorMask);
+        for (int i = 0; i < kCapCount; ++i) {
+            mCapsOn[i] = glIsEnabled(kCaps[i]);
+            glDisable(kCaps[i]);
+        }
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    }
+    ~DrawState() {
+        glBindSampler(0, (GLuint) mSampler0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint) mTexture0);
+        glActiveTexture((GLenum) mActiveTexture);
+        glBindVertexArray((GLuint) mVao);
+        glUseProgram((GLuint) mProgram);
+        glViewport(mViewport[0], mViewport[1], mViewport[2], mViewport[3]);
+        glColorMask(mColorMask[0], mColorMask[1], mColorMask[2], mColorMask[3]);
+        for (int i = 0; i < kCapCount; ++i) {
+            if (mCapsOn[i]) {
+                glEnable(kCaps[i]);
+            } else {
+                glDisable(kCaps[i]);
+            }
+        }
+    }
+
+  private:
+    static constexpr int kCapCount = 4;
+    static constexpr GLenum kCaps[kCapCount] = { GL_BLEND, GL_DEPTH_TEST, GL_CULL_FACE, GL_STENCIL_TEST };
+    GLint mProgram = 0, mVao = 0, mActiveTexture = 0, mTexture0 = 0, mSampler0 = 0, mViewport[4] = {};
+    GLboolean mColorMask[4] = {};
+    GLboolean mCapsOn[kCapCount] = {};
+};
+
+// The game texture copy (see CopyGameEye): a full-screen triangle that samples
+// the game framebuffer's texture. In this libultraship the texture has the GL
+// bottom-left origin like the swapchain image, so no flip (BattleShip's
+// libultraship needed one; on device 2026-11-01 the flipped copy was upside down).
+constexpr const char* kGameCopyVs = R"(#version 300 es
+out vec2 vPos;
+void main() {
+    vPos = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    gl_Position = vec4(vPos * 2.0 - 1.0, 0.0, 1.0);
+}
+)";
+constexpr const char* kGameCopyFs = R"(#version 300 es
+precision highp float;
+uniform sampler2D uGame;
+uniform bool uAlphaView;
+in vec2 vPos;
+out vec4 oColor;
+void main() {
+    vec4 c = texture(uGame, vPos);
+    oColor = uAlphaView ? vec4(c.aaa, 1.0) : c;
+}
+)";
+
+GLuint CompileShader(GLenum type, const char* source) {
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+    GLint ok = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char log[512] = {};
+        glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
+        LOGE("Game copy shader: %s", log);
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+// Failure is not fatal: CopyGameEye then blits from the default framebuffer.
+void CreateGameCopy() {
+    const GLuint vs = CompileShader(GL_VERTEX_SHADER, kGameCopyVs);
+    const GLuint fs = CompileShader(GL_FRAGMENT_SHADER, kGameCopyFs);
+    if (vs != 0 && fs != 0) {
+        GLuint program = glCreateProgram();
+        glAttachShader(program, vs);
+        glAttachShader(program, fs);
+        glLinkProgram(program);
+        GLint ok = GL_FALSE;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (ok) {
+            gXr.copyProgram = program;
+            gXr.copyAlphaViewLoc = glGetUniformLocation(program, "uAlphaView");
+            GLint prevProgram = 0;
+            glGetIntegerv(GL_CURRENT_PROGRAM, &prevProgram);
+            glUseProgram(program);
+            glUniform1i(glGetUniformLocation(program, "uGame"), 0);
+            glUseProgram((GLuint) prevProgram);
+            glGenVertexArrays(1, &gXr.copyVao);
+        } else {
+            LOGE("Game copy program failed to link");
+            glDeleteProgram(program);
+        }
+    }
+    glDeleteShader(vs); // 0 is ignored
+    glDeleteShader(fs);
+}
+
+// The game framebuffer's color texture (0 until the game has drawn a frame).
+GLuint GameTexture() {
+    Ship::Context* context = Ship::Context::GetRawInstance();
+    if (context == nullptr) {
+        return 0;
+    }
+    const auto window = context->GetWindow();
+    return window ? (GLuint) window->GetGfxFrameBuffer() : 0;
+}
+
+// Copies the frame just drawn into one eye-sized slot at dstX, with its alpha.
+// The source is the game framebuffer's texture, not the default framebuffer:
+// the Quest build keeps the game's alpha (LUS_GL_GAME_FB_ALPHA), and the GUI's
+// blended presentation into the default framebuffer would darken pixels with
+// alpha below 1. Until the game has a texture, blit the default framebuffer.
+// Runs inside a BlitState (scissor off, sRGB writes off).
+void CopyGameEye(int srcW, int srcH, GLuint drawFbo, int dstX) {
+    const GLuint texture = GameTexture();
+    if (texture == 0 || gXr.copyProgram == 0) {
+        BlitEye(0, srcW, srcH, drawFbo, dstX);
+        return;
+    }
+    if (texture != gXr.loggedCopyTexture) {
+        gXr.loggedCopyTexture = texture;
+        LOGI("Presenting from the game texture (GL %u)", texture);
+    }
+    DrawState state;
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, drawFbo);
+    glViewport(dstX, 0, gXr.width, gXr.height);
+    glUseProgram(gXr.copyProgram);
+    glUniform1i(gXr.copyAlphaViewLoc, CVarGetInteger(kAlphaViewCVar, 0) != 0);
+    glBindVertexArray(gXr.copyVao);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glBindSampler(0, 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+}
+
 // The left eye's swap: hold its image until the right eye's swap, so both
 // halves of a swapchain image always come from the same frame (repeat XR
 // frames re-show the last released image).
@@ -758,7 +973,7 @@ void StashLeftEye(SDL_Window* window) {
     int srcW = 0, srcH = 0;
     GetDrawableSize(window, &srcW, &srcH);
     BlitState state;
-    BlitEye(0, srcW, srcH, gXr.stashFbo, 0);
+    CopyGameEye(srcW, srcH, gXr.stashFbo, 0);
     gXr.stashValid = true;
 }
 
@@ -786,9 +1001,9 @@ bool CopyGameFrame(SDL_Window* window) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gXr.images[index].image, 0);
         if (stereo) {
             BlitEye(gXr.stashFbo, gXr.width, gXr.height, gXr.blitFbo, 0);
-            BlitEye(0, srcW, srcH, gXr.blitFbo, gXr.width);
+            CopyGameEye(srcW, srcH, gXr.blitFbo, gXr.width);
         } else {
-            BlitEye(0, srcW, srcH, gXr.blitFbo, 0);
+            CopyGameEye(srcW, srcH, gXr.blitFbo, 0);
         }
     }
     gXr.stashValid = false;
@@ -798,7 +1013,82 @@ bool CopyGameFrame(SDL_Window* window) {
         return false;
     }
     gXr.imageStereo = stereo;
+    gXr.imageCutout = gXr.cutoutDraw && GameTexture() != 0 && gXr.copyProgram != 0;
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Passthrough
+// ---------------------------------------------------------------------------
+
+PassthroughFns gPassthroughFns;
+
+void DestroyPassthrough() {
+    if (gXr.passthroughLayer != XR_NULL_HANDLE && gPassthroughFns.destroyLayer != nullptr) {
+        gPassthroughFns.destroyLayer(gXr.passthroughLayer);
+    }
+    if (gXr.passthrough != XR_NULL_HANDLE && gPassthroughFns.destroy != nullptr) {
+        gPassthroughFns.destroy(gXr.passthrough);
+    }
+    gXr.passthroughLayer = XR_NULL_HANDLE;
+    gXr.passthrough = XR_NULL_HANDLE;
+    gXr.passthroughRunning = false;
+}
+
+bool CreatePassthrough() {
+    PassthroughFns& fn = gPassthroughFns;
+    if (!InstanceProc("xrCreatePassthroughFB", fn.create) || !InstanceProc("xrDestroyPassthroughFB", fn.destroy) ||
+        !InstanceProc("xrPassthroughStartFB", fn.start) || !InstanceProc("xrPassthroughPauseFB", fn.pause) ||
+        !InstanceProc("xrCreatePassthroughLayerFB", fn.createLayer) ||
+        !InstanceProc("xrDestroyPassthroughLayerFB", fn.destroyLayer) ||
+        !InstanceProc("xrPassthroughLayerResumeFB", fn.resumeLayer) ||
+        !InstanceProc("xrPassthroughLayerPauseFB", fn.pauseLayer)) {
+        return false;
+    }
+    XrPassthroughCreateInfoFB create{ XR_TYPE_PASSTHROUGH_CREATE_INFO_FB };
+    create.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
+    if (!Ok(fn.create(gXr.session, &create, &gXr.passthrough), "xrCreatePassthroughFB")) {
+        return false;
+    }
+    XrPassthroughLayerCreateInfoFB layer{ XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB };
+    layer.passthrough = gXr.passthrough;
+    layer.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
+    layer.purpose = XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB;
+    return Ok(fn.createLayer(gXr.session, &layer, &gXr.passthroughLayer), "xrCreatePassthroughLayerFB");
+}
+
+// Follows gXrPassthrough (read live): creates the passthrough object and
+// layer the first time it's wanted, pauses and resumes them after that.
+// Any failure leaves opaque VR for the rest of the process.
+void UpdatePassthrough() {
+    if (!gXr.passthroughExt || gXr.passthroughFailed) {
+        gCutoutAvailable = false;
+        return;
+    }
+    const bool wanted = CVarGetInteger(kPassthroughCVar, 1) != 0;
+    if (wanted != gXr.passthroughRunning) {
+        PassthroughFns& fn = gPassthroughFns;
+        bool ok;
+        if (!wanted) {
+            ok = Ok(fn.pauseLayer(gXr.passthroughLayer), "xrPassthroughLayerPauseFB") &&
+                 Ok(fn.pause(gXr.passthrough), "xrPassthroughPauseFB");
+        } else if (gXr.passthrough == XR_NULL_HANDLE) {
+            ok = CreatePassthrough();
+        } else {
+            ok = Ok(fn.start(gXr.passthrough), "xrPassthroughStartFB") &&
+                 Ok(fn.resumeLayer(gXr.passthroughLayer), "xrPassthroughLayerResumeFB");
+        }
+        if (!ok) {
+            LOGE("Passthrough disabled for this run; staying in opaque VR");
+            gXr.passthroughFailed = true;
+            DestroyPassthrough();
+            gCutoutAvailable = false;
+            return;
+        }
+        gXr.passthroughRunning = wanted;
+        LOGI("Passthrough %s", wanted ? "active" : "paused");
+    }
+    gCutoutAvailable = gXr.passthroughRunning && gXr.copyProgram != 0;
 }
 
 // Display refreshes each present covers when the refresh rate is a whole
@@ -813,18 +1103,29 @@ int RefreshesPerPresent() {
 }
 
 void EndFrame(const XrFrameState& frame, bool showScreen) {
+    XrCompositionLayerPassthroughFB passthrough{ XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB };
     XrCompositionLayerQuad quads[2] = { { XR_TYPE_COMPOSITION_LAYER_QUAD }, { XR_TYPE_COMPOSITION_LAYER_QUAD } };
-    const XrCompositionLayerBaseHeader* layers[] = { reinterpret_cast<XrCompositionLayerBaseHeader*>(&quads[0]),
-                                                     reinterpret_cast<XrCompositionLayerBaseHeader*>(&quads[1]) };
+    const XrCompositionLayerBaseHeader* layers[3] = {};
+    uint32_t layerCount = 0;
     XrFrameEndInfo endInfo{ XR_TYPE_FRAME_END_INFO };
     endInfo.displayTime = frame.predictedDisplayTime;
+    // FB passthrough composites as a layer; the blend mode stays opaque.
     endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    if (frame.shouldRender && gXr.passthroughRunning) {
+        // Underlay: submitted first, the screen draws over it.
+        passthrough.layerHandle = gXr.passthroughLayer;
+        layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&passthrough);
+    }
     if (showScreen) {
         // The quads show the most recently released swapchain image: one per
         // eye at the same pose for a stereo pair, else the left half to both.
+        // A cut-out image blends over the room. Its color is premultiplied:
+        // the game blends over a black, alpha-0 background with "over" alpha.
+        const bool blend = gXr.imageCutout && gXr.passthroughRunning;
         const int count = gXr.imageStereo ? 2 : 1;
         for (int i = 0; i < count; ++i) {
             XrCompositionLayerQuad& quad = quads[i];
+            quad.layerFlags = blend ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0;
             quad.space = gXr.local;
             quad.eyeVisibility = !gXr.imageStereo ? XR_EYE_VISIBILITY_BOTH
                                                   : (i == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT);
@@ -833,10 +1134,11 @@ void EndFrame(const XrFrameState& frame, bool showScreen) {
             quad.pose.orientation.w = 1.0f;
             quad.pose.position = { 0.0f, 0.0f, -kScreenDistance };
             quad.size = { kScreenHeight * (float) gXr.width / (float) gXr.height, kScreenHeight };
+            layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad);
         }
-        endInfo.layerCount = (uint32_t) count;
-        endInfo.layers = layers;
     }
+    endInfo.layerCount = layerCount;
+    endInfo.layers = layerCount > 0 ? layers : nullptr;
     Ok(xrEndFrame(gXr.session, &endInfo), "xrEndFrame");
 }
 
@@ -864,6 +1166,7 @@ void LogPacingStats(XrTime displayTime) {
 // The schedule is absolute: presents after a short stall are not held, so the
 // game catches up; only a stall longer than kMaxCatchUpPresents resyncs.
 void SubmitFrame(SDL_Window* window) {
+    UpdatePassthrough();
     const int refreshes = port_xr_paces_frames() ? RefreshesPerPresent() : 0;
     if (refreshes != gXr.loggedRefreshes) {
         gXr.loggedRefreshes = refreshes;
@@ -1068,6 +1371,7 @@ bool Initialize() {
     if (!CreateInstance() || !CreateSession() || !CreateSwapchain() || !CreateInput()) {
         return false;
     }
+    CreateGameCopy();
     if (!AttachPad()) {
         LOGE("Continuing without Touch controller input");
     }
@@ -1083,6 +1387,26 @@ extern "C" void port_xr_note_camera(const void* mtx, const float eye[3], const f
     std::memcpy(note.at, at, sizeof(note.at));
     std::lock_guard<std::mutex> lock(gCameraMutex);
     gCameras[mtx] = note;
+}
+
+extern "C" int port_xr_background_cutout(const void* list, int candidate) {
+    const bool cutout = candidate != 0 && gCutoutAvailable && CVarGetInteger(kDioramaCVar, 1) != 0;
+    std::lock_guard<std::mutex> lock(gBackgroundMutex);
+    gBackgroundCutout[list] = cutout;
+    return cutout ? 1 : 0;
+}
+
+extern "C" void port_xr_frame_background(const void* list) {
+    bool cutout = false;
+    if (list != nullptr) {
+        std::lock_guard<std::mutex> lock(gBackgroundMutex);
+        auto it = gBackgroundCutout.find(list);
+        cutout = it != gBackgroundCutout.end() && it->second;
+    }
+    if (cutout != gXr.cutoutDraw) {
+        LOGI("Diorama cut-out %s", cutout ? "on" : "off");
+    }
+    gXr.cutoutDraw = cutout;
 }
 
 extern "C" void port_xr_set_present_rate(int fps) {

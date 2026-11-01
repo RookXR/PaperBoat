@@ -21,6 +21,12 @@
         android:name="android.hardware.usb.host"
         android:required="false" />
 
+    <!-- Meta Quest passthrough (the room around / behind the game). Not
+         required, so phone builds and headsets without it still install. -->
+    <uses-feature
+        android:name="com.oculus.feature.PASSTHROUGH"
+        android:required="false" />
+
     <!-- External mouse input events -->
     <uses-feature
         android:name="android.hardware.type.pc"

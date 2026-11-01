@@ -1,5 +1,6 @@
 #include "common.h"
 #include "nu/nusys.h"
+#include "port/xr/quest_xr.h"
 #include "ld_addrs.h"
 #include "hud_element.h"
 #include "sprite.h"
@@ -327,6 +328,9 @@ void gfx_draw_background(void) {
     camera = &gCameras[gCurrentCameraID];
     bgRenderState = gGameStatusPtr->backgroundFlags & BACKGROUND_RENDER_STATE_MASK;
 
+    // [port] Quest diorama: this frame is opaque unless the default case below cuts it out.
+    port_xr_background_cutout(gDisplayContext->backgroundGfx, 0);
+
     // port_appendGfx_pause_background
     CALL_CANCELLABLE_RETURN_EVENT(BackgroundPreDraw, bgRenderState);
 
@@ -409,6 +413,13 @@ void gfx_draw_background(void) {
             gDPFillRectangle(gMainGfxPos++, 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1);
             gDPPipeSync(gMainGfxPos++);
             gDPSetColorImage(gMainGfxPos++, G_IM_FMT_RGBA, G_IM_SIZ_16b, SCREEN_WIDTH, osVirtualToPhysical(nuGfxCfb_ptr));
+
+            // [port] Quest diorama: no backdrop, letterbox or margins. The frame stays
+            // transparent (alpha 0) wherever the scene draws nothing, and the room shows there.
+            if (port_xr_background_cutout(gDisplayContext->backgroundGfx, 1)) {
+                break;
+            }
+
             gDPSetFillColor(gMainGfxPos++, PACK_FILL_COLOR(camera->bgColor[0], camera->bgColor[1], camera->bgColor[2], 1));
 
             backgroundMinX = gGameStatusPtr->backgroundMinX;

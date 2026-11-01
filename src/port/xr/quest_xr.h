@@ -36,6 +36,19 @@ int port_xr_stereo_active(void);
  * the pair; presents made with -1 show one image to both eyes. */
 void port_xr_set_eye(int eye);
 
+/* Called by the game thread while it builds a frame's background display
+ * list (background_gfx.c): first with candidate 0, then again with
+ * candidate 1 if the scene is about to draw its usual backdrop. Nonzero =
+ * draw no backdrop: the room shows wherever the scene draws nothing
+ * (passthrough running, gXrDiorama on). The last answer is remembered for
+ * `list` (the display context's background list). */
+int port_xr_background_cutout(const void* list, int candidate);
+
+/* Called on the render thread before a frame is drawn, with the background
+ * list it starts with (NULL if none): the frame is presented as a cut-out
+ * if that list was built without its backdrop. */
+void port_xr_frame_background(const void* list);
+
 #else
 
 static inline void port_xr_note_camera(const void* mtx, const float eye[3], const float at[3]) {
@@ -47,6 +60,12 @@ static inline void port_xr_set_present_rate(int fps) { (void) fps; }
 static inline int port_xr_paces_frames(void) { return 0; }
 static inline int port_xr_stereo_active(void) { return 0; }
 static inline void port_xr_set_eye(int eye) { (void) eye; }
+static inline int port_xr_background_cutout(const void* list, int candidate) {
+    (void) list;
+    (void) candidate;
+    return 0;
+}
+static inline void port_xr_frame_background(const void* list) { (void) list; }
 
 #endif
 
