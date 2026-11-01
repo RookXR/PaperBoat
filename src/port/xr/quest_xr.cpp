@@ -161,7 +161,18 @@ struct InputActions {
 struct CameraNote {
     float eye[3];
     float at[3];
+    // The camera's viewport in native 320x240 pixels (left, top, right, bottom).
+    float viewport[4];
 };
+
+// Room view (see RoomEyeMatrix), read live.
+constexpr const char* kRoomViewCVar = "gXrRoomView";             // scenes as objects in the room
+constexpr const char* kRoomDistanceCVar = "gXrRoomDistance";     // m ahead of the LOCAL origin
+constexpr const char* kRoomHeightCVar = "gXrRoomHeight";         // m above the LOCAL origin (eye level)
+constexpr const char* kRoomUnitsPerMeterCVar = "gXrRoomUnitsPerMeter"; // game units per meter (model scale)
+constexpr float kDefaultRoomDistance = 1.0f;
+constexpr float kDefaultRoomHeight = -0.35f;
+constexpr float kDefaultRoomUnitsPerMeter = 300.0f;
 
 struct QuestXr {
     Mode mode = Mode::Untried;
@@ -202,6 +213,17 @@ struct QuestXr {
 
     // The frame being drawn has no backdrop (port_xr_frame_background).
     bool cutoutDraw = false;
+
+    // Room view: the pair being drawn uses the eye poses and fields of view
+    // in pairViews (fov already widened, see RoomFov); the released image was
+    // drawn with imageViews and is submitted as a projection layer.
+    bool pairRoom = false;
+    bool loggedRoom = false;
+    XrView pairViews[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
+    bool imageRoom = false;
+    XrView imageViews[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
+    XrTime lastDisplayTime = 0; // predicted display time of the latest XR frame
+    int roomCheckCountdown = 0;
 
     // Stereo: the eye the render loop is drawing (-1 = flat), and the left
     // eye's image, held until the right eye's swap submits both.
@@ -1014,6 +1036,11 @@ bool CopyGameFrame(SDL_Window* window) {
     }
     gXr.imageStereo = stereo;
     gXr.imageCutout = gXr.cutoutDraw && GameTexture() != 0 && gXr.copyProgram != 0;
+    gXr.imageRoom = stereo && gXr.pairRoom;
+    if (gXr.imageRoom) {
+        gXr.imageViews[0] = gXr.pairViews[0];
+        gXr.imageViews[1] = gXr.pairViews[1];
+    }
     return true;
 }
 
@@ -1104,6 +1131,9 @@ int RefreshesPerPresent() {
 
 void EndFrame(const XrFrameState& frame, bool showScreen) {
     XrCompositionLayerPassthroughFB passthrough{ XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB };
+    XrCompositionLayerProjection projection{ XR_TYPE_COMPOSITION_LAYER_PROJECTION };
+    XrCompositionLayerProjectionView projectionViews[2] = { { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW },
+                                                            { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW } };
     XrCompositionLayerQuad quads[2] = { { XR_TYPE_COMPOSITION_LAYER_QUAD }, { XR_TYPE_COMPOSITION_LAYER_QUAD } };
     const XrCompositionLayerBaseHeader* layers[3] = {};
     uint32_t layerCount = 0;
@@ -1116,7 +1146,22 @@ void EndFrame(const XrFrameState& frame, bool showScreen) {
         passthrough.layerHandle = gXr.passthroughLayer;
         layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&passthrough);
     }
-    if (showScreen) {
+    if (showScreen && gXr.imageRoom) {
+        // Room view: each half was rendered from that eye's pose and (widened)
+        // field of view; the compositor reprojects it to the eye's current pose.
+        const bool blend = gXr.imageCutout && gXr.passthroughRunning;
+        projection.layerFlags = blend ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0;
+        projection.space = gXr.local;
+        projection.viewCount = 2;
+        projection.views = projectionViews;
+        for (int i = 0; i < 2; ++i) {
+            projectionViews[i].pose = gXr.imageViews[i].pose;
+            projectionViews[i].fov = gXr.imageViews[i].fov;
+            projectionViews[i].subImage.swapchain = gXr.swapchain;
+            projectionViews[i].subImage.imageRect = { { i * gXr.width, 0 }, { gXr.width, gXr.height } };
+        }
+        layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&projection);
+    } else if (showScreen) {
         // The quads show the most recently released swapchain image: one per
         // eye at the same pose for a stereo pair, else the left half to both.
         // A cut-out image blends over the room. Its color is premultiplied:
@@ -1190,6 +1235,7 @@ void SubmitFrame(SDL_Window* window) {
             return;
         }
         gXr.displayPeriod = frame.predictedDisplayPeriod;
+        gXr.lastDisplayTime = frame.predictedDisplayTime;
         UpdateInput();
 
         const XrTime displayTime = frame.predictedDisplayTime;
@@ -1366,6 +1412,256 @@ void StereoCheck(const float m[4][4], const CameraNote& cam) {
          params.swapEyes ? " [eyes swapped]" : "");
 }
 
+// ---------------------------------------------------------------------------
+// Room view
+// ---------------------------------------------------------------------------
+//
+// The scene becomes an object in the room: each eye renders the game world
+// from its tracked pose (LOCAL space) and field of view, and the pair is
+// submitted as a projection layer. The game world maps into the room level
+// (world +y = room up) and at a fixed scale (gXrRoomUnitsPerMeter): the
+// camera's look-at point sits at (0, gXrRoomHeight, -gXrRoomDistance) and the
+// camera's horizontal heading points along room -z, so from the default
+// position you look at the scene the way the game camera does. The camera
+// keeps following Mario, so the world slides through that spot as he walks.
+//
+// Each noted perspective matrix M (clip = [world 1]*M) is replaced by one that
+// maps world -> room -> eye -> the eye's clip space. Depth keeps the game's
+// own mapping (z/w as a function of distance in game units), so fog and the
+// depth range behave as in the game. x is pre-divided by Fast3D's widescreen
+// squeeze and both axes are mapped through the camera's viewport, so the
+// eye's field of view lands exactly on the whole framebuffer.
+
+constexpr int kRoomCheckPresents = 300;
+
+struct RoomParams {
+    float distance, height, unitsPerMeter;
+};
+
+RoomParams ReadRoomParams() {
+    return { std::clamp(CVarGetFloat(kRoomDistanceCVar, kDefaultRoomDistance), 0.2f, 5.0f),
+             std::clamp(CVarGetFloat(kRoomHeightCVar, kDefaultRoomHeight), -2.0f, 1.0f),
+             std::clamp(CVarGetFloat(kRoomUnitsPerMeterCVar, kDefaultRoomUnitsPerMeter), 20.0f, 20000.0f) };
+}
+
+// Fast3D's clip x scale for 3D vertices on the game framebuffer
+// (Interpreter::AdjXForAspectRatio): 4:3 over the framebuffer's aspect.
+float WidescreenSqueeze() {
+    return (4.0f / 3.0f) / kRenderAspect;
+}
+
+// Rotates v by unit quaternion q.
+void Rotate(const XrQuaternionf& q, const float v[3], float out[3]) {
+    const float qv[3] = { q.x, q.y, q.z };
+    // t = 2 * cross(q.xyz, v); out = v + w*t + cross(q.xyz, t)
+    const float t[3] = { 2.0f * (qv[1] * v[2] - qv[2] * v[1]), 2.0f * (qv[2] * v[0] - qv[0] * v[2]),
+                         2.0f * (qv[0] * v[1] - qv[1] * v[0]) };
+    out[0] = v[0] + q.w * t[0] + (qv[1] * t[2] - qv[2] * t[1]);
+    out[1] = v[1] + q.w * t[1] + (qv[2] * t[0] - qv[0] * t[2]);
+    out[2] = v[2] + q.w * t[2] + (qv[0] * t[1] - qv[1] * t[0]);
+}
+
+// Widens a view's field of view across so a framebuffer pixel covers the same
+// angle across and up (the image is 16:9, an eye's field of view about 1:1).
+// Otherwise screen-space sprites and the HUD would come out stretched.
+void RoomFov(XrFovf& fov) {
+    const float l = std::tan(fov.angleLeft), r = std::tan(fov.angleRight);
+    const float u = std::tan(fov.angleUp), d = std::tan(fov.angleDown);
+    const float cx = 0.5f * (r + l);
+    const float hx = std::max(0.5f * (r - l), 0.5f * (u - d) * kRenderAspect);
+    fov.angleLeft = std::atan(cx - hx);
+    fov.angleRight = std::atan(cx + hx);
+}
+
+// The eye poses and fields of view for the pair displayed at `time`.
+bool SampleRoomViews(XrTime time) {
+    XrViewLocateInfo info{ XR_TYPE_VIEW_LOCATE_INFO };
+    info.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    info.displayTime = time;
+    info.space = gXr.local;
+    XrViewState state{ XR_TYPE_VIEW_STATE };
+    XrView views[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
+    uint32_t count = 0;
+    if (!XR_SUCCEEDED(xrLocateViews(gXr.session, &info, &state, 2, &count, views)) || count != 2) {
+        return false;
+    }
+    const XrViewStateFlags needed = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
+    if ((state.viewStateFlags & needed) != needed) {
+        return false;
+    }
+    for (int i = 0; i < 2; ++i) {
+        gXr.pairViews[i] = views[i];
+        RoomFov(gXr.pairViews[i].fov);
+    }
+    return true;
+}
+
+// The parts of a perspective camera matrix the room view keeps: its scale s
+// and the depth mapping z_clip = -P22*w_clip + s*P32 (Paper Mario's
+// guPerspective: w_clip = -s*z_camera).
+struct PerspDepth {
+    float s, p22, sP32;
+};
+
+bool ReadPerspDepth(const float m[4][4], PerspDepth* out) {
+    if (IsAffine(m)) {
+        return false;
+    }
+    const float s = Norm3(m[0][3], m[1][3], m[2][3]);
+    if (s < 1e-9f) {
+        return false;
+    }
+    int row = 0;
+    for (int i = 1; i < 3; i++) {
+        if (std::fabs(m[i][3]) > std::fabs(m[row][3])) {
+            row = i;
+        }
+    }
+    out->s = s;
+    out->p22 = -m[row][2] / m[row][3];
+    out->sP32 = m[3][2] + out->p22 * m[3][3];
+    return true;
+}
+
+// Maps one world point to the eye's clip space (see the section comment).
+// In double: RoomEyeMatrix differences nearby results.
+void RoomClip(const double p[3], const CameraNote& cam, const XrView& view, const PerspDepth& depth,
+              const RoomParams& room, double clip[4]) {
+    // World -> room: level, the camera's heading along -z, at -> anchor.
+    double fx = (double) cam.at[0] - cam.eye[0], fz = (double) cam.at[2] - cam.eye[2];
+    const double fl = std::sqrt(fx * fx + fz * fz);
+    fx /= fl;
+    fz /= fl;
+    const double k = room.unitsPerMeter;
+    const double d[3] = { p[0] - cam.at[0], p[1] - cam.at[1], p[2] - cam.at[2] };
+    const double r[3] = { (-fz * d[0] + fx * d[2]) / k, d[1] / k + room.height,
+                          -(fx * d[0] + fz * d[2]) / k - room.distance };
+    // Room -> eye: rotate by the inverse of the view pose's orientation.
+    const double qx = -view.pose.orientation.x, qy = -view.pose.orientation.y, qz = -view.pose.orientation.z;
+    const double qw = view.pose.orientation.w;
+    const double v[3] = { r[0] - view.pose.position.x, r[1] - view.pose.position.y, r[2] - view.pose.position.z };
+    const double t[3] = { 2.0 * (qy * v[2] - qz * v[1]), 2.0 * (qz * v[0] - qx * v[2]), 2.0 * (qx * v[1] - qy * v[0]) };
+    const double e[3] = { v[0] + qw * t[0] + (qy * t[2] - qz * t[1]), v[1] + qw * t[1] + (qz * t[0] - qx * t[2]),
+                          v[2] + qw * t[2] + (qx * t[1] - qy * t[0]) };
+    // Eye -> clip, through the field of view, the viewport and the squeeze.
+    const double l = std::tan((double) view.fov.angleLeft), rt = std::tan((double) view.fov.angleRight);
+    const double u = std::tan((double) view.fov.angleUp), dn = std::tan((double) view.fov.angleDown);
+    const double cx = 0.5 * (rt + l), hx = 0.5 * (rt - l);
+    const double cy = 0.5 * (u + dn), hy = 0.5 * (u - dn);
+    const double vx0 = ((double) cam.viewport[0] + cam.viewport[2]) / 320.0 - 1.0;
+    const double vxs = ((double) cam.viewport[2] - cam.viewport[0]) / 320.0;
+    const double vy0 = 1.0 - ((double) cam.viewport[1] + cam.viewport[3]) / 240.0;
+    const double vys = ((double) cam.viewport[3] - cam.viewport[1]) / 240.0;
+    const double W = -e[2]; // distance ahead, m
+    const double sk = depth.s * k;
+    clip[0] = sk * ((e[0] - cx * W) / hx - vx0 * W) / (vxs * WidescreenSqueeze());
+    clip[1] = sk * ((e[1] - cy * W) / hy - vy0 * W) / vys;
+    clip[3] = sk * W;
+    clip[2] = -depth.p22 * clip[3] + depth.sP32;
+}
+
+// The eye's replacement for perspective camera matrix `in`. RoomClip is affine
+// in the world point, so the matrix is read off the images of the origin and
+// the unit axes.
+bool RoomEyeMatrix(const float in[4][4], const CameraNote& cam, int eye, float out[4][4]) {
+    PerspDepth depth;
+    if (!ReadPerspDepth(in, &depth)) {
+        return false;
+    }
+    const float fx = cam.at[0] - cam.eye[0], fz = cam.at[2] - cam.eye[2];
+    if (fx * fx + fz * fz < 1e-6f || cam.viewport[2] <= cam.viewport[0] || cam.viewport[3] <= cam.viewport[1]) {
+        return false; // looking straight down/up, or no viewport
+    }
+    const RoomParams room = ReadRoomParams();
+    const XrView& view = gXr.pairViews[eye == 1 ? 1 : 0];
+    const double origin[3] = { 0.0, 0.0, 0.0 };
+    double base[4];
+    RoomClip(origin, cam, view, depth, room, base);
+    for (int i = 0; i < 3; i++) {
+        double axis[3] = { 0.0, 0.0, 0.0 }, clip[4];
+        axis[i] = 1.0;
+        RoomClip(axis, cam, view, depth, room, clip);
+        for (int j = 0; j < 4; j++) {
+            out[i][j] = (float) (clip[j] - base[j]);
+        }
+    }
+    for (int j = 0; j < 4; j++) {
+        out[3][j] = (float) base[j];
+    }
+    return true;
+}
+
+// Logs a check of RoomEyeMatrix: the look-at point must land, through the
+// replacement matrix, the viewport and Fast3D's squeeze, where the eye sees
+// the room anchor; 10 cm of world up above it must land 10 cm above the anchor.
+void RoomCheck(const float m[4][4], const CameraNote& cam) {
+    float left[4][4];
+    if (!RoomEyeMatrix(m, cam, 0, left)) {
+        return;
+    }
+    const RoomParams room = ReadRoomParams();
+    const XrView& view = gXr.pairViews[0];
+    // Window NDC of a world point through the matrix (what Fast3D does).
+    auto windowNdc = [&](const float p[3], float ndc[2]) {
+        float clip[4];
+        Project(left, p, clip);
+        const float x = WidescreenSqueeze() * clip[0] / clip[3], y = clip[1] / clip[3];
+        const float vx0 = (cam.viewport[0] + cam.viewport[2]) / 320.0f - 1.0f;
+        const float vxs = (cam.viewport[2] - cam.viewport[0]) / 320.0f;
+        const float vy0 = 1.0f - (cam.viewport[1] + cam.viewport[3]) / 240.0f;
+        const float vys = (cam.viewport[3] - cam.viewport[1]) / 240.0f;
+        ndc[0] = vx0 + vxs * x;
+        ndc[1] = vy0 + vys * y;
+    };
+    // Window NDC of a room point seen by the eye (independent of the matrix).
+    auto eyeNdc = [&](const float r[3], float ndc[2]) {
+        const XrQuaternionf inv = { -view.pose.orientation.x, -view.pose.orientation.y, -view.pose.orientation.z,
+                                    view.pose.orientation.w };
+        const float rel[3] = { r[0] - view.pose.position.x, r[1] - view.pose.position.y,
+                               r[2] - view.pose.position.z };
+        float e[3];
+        Rotate(inv, rel, e);
+        const float l = std::tan(view.fov.angleLeft), rt = std::tan(view.fov.angleRight);
+        const float u = std::tan(view.fov.angleUp), dn = std::tan(view.fov.angleDown);
+        ndc[0] = (e[0] / -e[2] - 0.5f * (rt + l)) / (0.5f * (rt - l));
+        ndc[1] = (e[1] / -e[2] - 0.5f * (u + dn)) / (0.5f * (u - dn));
+    };
+    const float anchor[3] = { 0.0f, room.height, -room.distance };
+    const float above[3] = { 0.0f, room.height + 0.1f, -room.distance };
+    const float upWorld[3] = { cam.at[0], cam.at[1] + 0.1f * room.unitsPerMeter, cam.at[2] };
+    float a[2], b[2], c[2], d2[2];
+    windowNdc(cam.at, a);
+    eyeNdc(anchor, b);
+    windowNdc(upWorld, c);
+    eyeNdc(above, d2);
+    const float error = std::max(std::max(std::fabs(a[0] - b[0]), std::fabs(a[1] - b[1])),
+                                 std::max(std::fabs(c[0] - d2[0]), std::fabs(c[1] - d2[1])));
+    LOGI("Room check: focus %.0f, %.0f units/m, anchor %+.2f %+.2f m | NDC error %.1e (want ~0) | "
+         "viewport %.0f,%.0f-%.0f,%.0f | L eye at %+.2f %+.2f %+.2f m, fov x %.2f..%.2f y %.2f..%.2f (tan)",
+         Distance(cam.eye, cam.at), room.unitsPerMeter, room.height, -room.distance, error, cam.viewport[0],
+         cam.viewport[1], cam.viewport[2], cam.viewport[3], view.pose.position.x, view.pose.position.y,
+         view.pose.position.z, std::tan(view.fov.angleLeft), std::tan(view.fov.angleRight),
+         std::tan(view.fov.angleDown), std::tan(view.fov.angleUp));
+}
+
+// Decides, at the start of each stereo pair, whether it is drawn as a room
+// view, and samples the eye poses for the refresh the pair is due on.
+void BeginStereoPair() {
+    bool room = false;
+    if (gXr.cutoutDraw && CVarGetInteger(kRoomViewCVar, 1) != 0 && gXr.running) {
+        XrTime time = gXr.nextPresentTime;
+        if (time == 0 && gXr.lastDisplayTime != 0) {
+            time = gXr.lastDisplayTime + gXr.displayPeriod;
+        }
+        room = time != 0 && SampleRoomViews(time);
+    }
+    if (room != gXr.loggedRoom) {
+        gXr.loggedRoom = room;
+        LOGI("Room view %s", room ? "on" : "off");
+    }
+    gXr.pairRoom = room;
+}
+
 bool Initialize() {
     LOGI("Initializing OpenXR");
     if (!CreateInstance() || !CreateSession() || !CreateSwapchain() || !CreateInput()) {
@@ -1381,10 +1677,18 @@ bool Initialize() {
 
 } // namespace
 
-extern "C" void port_xr_note_camera(const void* mtx, const float eye[3], const float at[3]) {
+extern "C" void port_xr_note_camera(const void* mtx, const float eye[3], const float at[3], const short vpScale[4],
+                                    const short vpTrans[4]) {
     CameraNote note;
     std::memcpy(note.eye, eye, sizeof(note.eye));
     std::memcpy(note.at, at, sizeof(note.at));
+    // Vp: scale and translate in quarter pixels (as Interpreter::CalcAndSetViewport).
+    const float halfW = std::fabs((float) vpScale[0]) / 4.0f, halfH = std::fabs((float) vpScale[1]) / 4.0f;
+    const float cx = vpTrans[0] / 4.0f, cy = vpTrans[1] / 4.0f;
+    note.viewport[0] = cx - halfW;
+    note.viewport[1] = cy - halfH;
+    note.viewport[2] = cx + halfW;
+    note.viewport[3] = cy + halfH;
     std::lock_guard<std::mutex> lock(gCameraMutex);
     gCameras[mtx] = note;
 }
@@ -1419,6 +1723,9 @@ extern "C" int port_xr_paces_frames(void) {
 
 extern "C" void port_xr_set_eye(int eye) {
     gXr.eye = eye;
+    if (eye == 0) {
+        BeginStereoPair();
+    }
 }
 
 extern "C" int port_xr_stereo_active(void) {
@@ -1428,9 +1735,11 @@ extern "C" int port_xr_stereo_active(void) {
 const std::unordered_map<Mtx*, MtxF>& port_xr_eye_replacements(const std::unordered_map<Mtx*, MtxF>& base, int eye) {
     gXr.eyeReplacements = base;
     const StereoParams params = ReadStereoParams();
-    const bool check = eye == 1 && --gXr.stereoCheckCountdown <= 0;
+    const bool room = gXr.pairRoom;
+    int& countdown = room ? gXr.roomCheckCountdown : gXr.stereoCheckCountdown;
+    const bool check = eye == 1 && --countdown <= 0;
     if (check) {
-        gXr.stereoCheckCountdown = kStereoCheckPresents;
+        countdown = room ? kRoomCheckPresents : kStereoCheckPresents;
     }
 
     std::lock_guard<std::mutex> lock(gCameraMutex);
@@ -1445,7 +1754,14 @@ const std::unordered_map<Mtx*, MtxF>& port_xr_eye_replacements(const std::unorde
             DecodeMtx(mtx, source);
         }
         MtxF shifted;
-        if (ShiftForEye(source, Distance(cam.eye, cam.at), eye, params, shifted.mf)) {
+        if (room) {
+            if (RoomEyeMatrix(source, cam, eye, shifted.mf)) {
+                gXr.eyeReplacements[mtx] = shifted;
+                if (check) {
+                    RoomCheck(source, cam);
+                }
+            }
+        } else if (ShiftForEye(source, Distance(cam.eye, cam.at), eye, params, shifted.mf)) {
             gXr.eyeReplacements[mtx] = shifted;
             if (check) {
                 StereoCheck(source, cam);

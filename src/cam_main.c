@@ -197,7 +197,7 @@ void render_frame(s32 isSecondPass) {
             if (!(camera->flags & CAMERA_FLAG_ORTHO)) {
                 // Quest stereo shifts this matrix per eye (no-op elsewhere).
                 port_xr_note_camera(&gDisplayContext->camPerspMatrix[gCurrentCamID], &camera->lookAt_eye.x,
-                                    &camera->lookAt_obj.x);
+                                    &camera->lookAt_obj.x, camera->vp.vp.vscale, camera->vp.vp.vtrans);
             }
             gSPMatrix(gMainGfxPos++, &gDisplayContext->camPerspMatrix[gCurrentCamID], G_MTX_NOPUSH | G_MTX_LOAD |
                         G_MTX_PROJECTION);

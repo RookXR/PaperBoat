@@ -14,9 +14,11 @@ extern "C" {
 /* Called by the camera render (cam_main.c) each time it writes a camera's
  * projection-slot matrix: `mtx` is the Mtx it wrote, `eye` and `at` the
  * camera's world-space eye and look-at points (their distance is the stereo
- * focus). Stereo shifts that matrix per eye at draw time (perspective
- * matrices only; ortho ones are left alone). */
-void port_xr_note_camera(const void* mtx, const float eye[3], const float at[3]);
+ * focus), `vpScale`/`vpTrans` its viewport (Vp_t, quarter pixels). Stereo
+ * replaces that matrix per eye at draw time (perspective matrices only; ortho
+ * ones are left alone). */
+void port_xr_note_camera(const void* mtx, const float eye[3], const float at[3], const short vpScale[4],
+                         const short vpTrans[4]);
 
 /* The render loop's present rate (presents per second), set every frame. */
 void port_xr_set_present_rate(int fps);
@@ -51,10 +53,13 @@ void port_xr_frame_background(const void* list);
 
 #else
 
-static inline void port_xr_note_camera(const void* mtx, const float eye[3], const float at[3]) {
+static inline void port_xr_note_camera(const void* mtx, const float eye[3], const float at[3],
+                                       const short vpScale[4], const short vpTrans[4]) {
     (void) mtx;
     (void) eye;
     (void) at;
+    (void) vpScale;
+    (void) vpTrans;
 }
 static inline void port_xr_set_present_rate(int fps) { (void) fps; }
 static inline int port_xr_paces_frames(void) { return 0; }
