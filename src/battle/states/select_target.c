@@ -2,6 +2,7 @@
 #include "battle/battle.h"
 #include "battle/battle_menu.h"
 #include "hud_element.h"
+#include "port/xr/quest_xr.h"
 
 enum {
     // BTL_SUBSTATE_INIT            = 0,
@@ -303,6 +304,7 @@ void btl_state_draw_select_target(void) {
         get_screen_coords(CAM_BATTLE, targetX, targetY, targetZ, &screenX, &screenY, &screenZ);
         hud_element_set_render_pos(id, screenX + xOffset, screenY + yOffset);
         hud_element_set_alpha(id, BattleMenu_TargetPointerAlpha);
+        port_xr_anchor_hud_element(get_hud_element(id), CAM_BATTLE, targetX, targetY, targetZ, screenX, screenY);
     } else {
         for (i = 0; i < targetListLength; i++) {
             target = &choosingActor->targetData[targetIndexList[i]];
@@ -330,6 +332,8 @@ void btl_state_draw_select_target(void) {
             get_screen_coords(CAM_BATTLE, targetX, targetY, targetZ, &screenX, &screenY, &screenZ);
             hud_element_set_render_pos(id, screenX + xOffset, screenY + yOffset);
             hud_element_set_alpha(id, BattleMenu_TargetPointerAlpha);
+            port_xr_anchor_hud_element(get_hud_element(id), CAM_BATTLE, targetX, targetY, targetZ, screenX,
+                                       screenY);
         }
     }
 

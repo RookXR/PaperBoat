@@ -36,6 +36,14 @@
 //   alpha, and the quads blend over the room. Frames with a backdrop (menus,
 //   pause, title) stay opaque.
 //
+// UI in the room view (gXrHud, default on): the screen-space UI would sit
+//   head-locked at the edge of each eye's widened image. gfx_draw_frame
+//   brackets it (port_xr_note_hud); for room-view pairs it draws into our
+//   own Fast3D framebuffers instead: fixed UI on a steady panel above the
+//   scene, battle menus at the stage's front left, speech bubbles on the game camera's
+//   picture plane (over the speaker), and the battle target hand moved and
+//   scaled per eye onto its enemy.
+//
 // Input:
 //   Touch controllers are read through OpenXR actions (the system does not
 //   deliver them to the app as gamepads in immersive mode) and pushed into an
@@ -56,6 +64,8 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_system.h>
 
+#include <fast/Fast3dWindow.h>
+#include <fast/interpreter.h>
 #include <libultraship/bridge/consolevariablebridge.h>
 #include <ship/Context.h>
 #include <ship/window/Window.h>
@@ -76,7 +86,9 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -102,6 +114,10 @@ constexpr float kScreenHeight = 0.9f;
 // widescreen follows the window aspect, so this also picks 16:9 for the game.
 constexpr int kRenderWidth = 1920;
 constexpr int kRenderHeight = 1080;
+
+// One UI layer in the HUD swapchain: the 16:9 screen (native 426.7x240) at 3x.
+constexpr int kHudImageW = 1280;
+constexpr int kHudImageH = 720;
 
 constexpr XrDuration kStatsPeriod = 5000000000; // 5 s
 
@@ -196,6 +212,7 @@ struct QuestXr {
     bool hasImage = false;    // a swapchain image has been released and can be re-shown
     bool imageStereo = false; // ...and its halves are a left/right pair, not one flat image
     bool imageCutout = false; // ...and it was drawn without a backdrop (alpha = coverage)
+    bool imageHud = false;    // ...and the HUD swapchain holds its UI (HUD panel)
 
     // Copy from the game framebuffer's texture, keeping its alpha (CopyGameEye).
     GLuint copyProgram = 0, copyVao = 0;
@@ -914,7 +931,7 @@ GLuint CompileShader(GLenum type, const char* source) {
     if (!ok) {
         char log[512] = {};
         glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
-        LOGE("Game copy shader: %s", log);
+        LOGE("Shader: %s", log);
         glDeleteShader(shader);
         return 0;
     }
@@ -999,6 +1016,8 @@ void StashLeftEye(SDL_Window* window) {
     gXr.stashValid = true;
 }
 
+bool CopyHudImage();
+
 // Copy the finished frame into the next swapchain image: on the right eye's
 // swap, the stashed left eye and this frame side by side; on a flat present,
 // this frame into the left half alone.
@@ -1041,6 +1060,7 @@ bool CopyGameFrame(SDL_Window* window) {
         gXr.imageViews[0] = gXr.pairViews[0];
         gXr.imageViews[1] = gXr.pairViews[1];
     }
+    gXr.imageHud = gXr.imageRoom && CopyHudImage();
     return true;
 }
 
@@ -1129,13 +1149,25 @@ int RefreshesPerPresent() {
     return (whole >= 1.0 && std::fabs(refreshes - whole) < 0.02) ? (int) whole : 0;
 }
 
+// A UI quad in LOCAL space (UI in the room view).
+struct HudPlane {
+    XrPosef pose;
+    float width, height; // m
+};
+HudPlane HudPanelPose();
+const HudPlane* HudImagePlane();
+const HudPlane* HudImageParty();
+XrSwapchain HudSwapchain();
+
 void EndFrame(const XrFrameState& frame, bool showScreen) {
     XrCompositionLayerPassthroughFB passthrough{ XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB };
     XrCompositionLayerProjection projection{ XR_TYPE_COMPOSITION_LAYER_PROJECTION };
     XrCompositionLayerProjectionView projectionViews[2] = { { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW },
                                                             { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW } };
     XrCompositionLayerQuad quads[2] = { { XR_TYPE_COMPOSITION_LAYER_QUAD }, { XR_TYPE_COMPOSITION_LAYER_QUAD } };
-    const XrCompositionLayerBaseHeader* layers[3] = {};
+    XrCompositionLayerQuad hudQuads[3] = { { XR_TYPE_COMPOSITION_LAYER_QUAD }, { XR_TYPE_COMPOSITION_LAYER_QUAD },
+                                           { XR_TYPE_COMPOSITION_LAYER_QUAD } };
+    const XrCompositionLayerBaseHeader* layers[6] = {};
     uint32_t layerCount = 0;
     XrFrameEndInfo endInfo{ XR_TYPE_FRAME_END_INFO };
     endInfo.displayTime = frame.predictedDisplayTime;
@@ -1161,6 +1193,30 @@ void EndFrame(const XrFrameState& frame, bool showScreen) {
             projectionViews[i].subImage.imageRect = { { i * gXr.width, 0 }, { gXr.width, gXr.height } };
         }
         layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&projection);
+        // The UI layers over the scene: the steady panel, the messages on
+        // the picture plane, the battle menus by the party (drawn in that
+        // order). Premultiplied like the game image (cleared to 0,0,0,0,
+        // "over" alpha).
+        if (gXr.imageHud) {
+            const HudPlane* plane = HudImagePlane();
+            const HudPlane* party = HudImageParty();
+            const HudPlane placed[3] = { HudPanelPose(), plane != nullptr ? *plane : HudPlane{},
+                                         party != nullptr ? *party : HudPlane{} };
+            for (int k = 0; k < 3; k++) {
+                if ((k == PORT_XR_HUD_PLANE && plane == nullptr) || (k == PORT_XR_HUD_PARTY && party == nullptr)) {
+                    continue;
+                }
+                XrCompositionLayerQuad& quad = hudQuads[k];
+                quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+                quad.space = gXr.local;
+                quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+                quad.subImage.swapchain = HudSwapchain();
+                quad.subImage.imageRect = { { 0, k * kHudImageH }, { kHudImageW, kHudImageH } };
+                quad.pose = placed[k].pose;
+                quad.size = { placed[k].width, placed[k].height };
+                layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad);
+            }
+        }
     } else if (showScreen) {
         // The quads show the most recently released swapchain image: one per
         // eye at the same pose for a stereo pair, else the left half to both.
@@ -1523,19 +1579,26 @@ bool ReadPerspDepth(const float m[4][4], PerspDepth* out) {
     return true;
 }
 
-// Maps one world point to the eye's clip space (see the section comment).
-// In double: RoomEyeMatrix differences nearby results.
-void RoomClip(const double p[3], const CameraNote& cam, const XrView& view, const PerspDepth& depth,
-              const RoomParams& room, double clip[4]) {
-    // World -> room: level, the camera's heading along -z, at -> anchor.
+// World -> room (LOCAL space, m): level, the camera's heading along -z, its
+// look-at point at the anchor. The camera must not look straight down/up.
+void WorldToRoom(const double p[3], const CameraNote& cam, const RoomParams& room, double r[3]) {
     double fx = (double) cam.at[0] - cam.eye[0], fz = (double) cam.at[2] - cam.eye[2];
     const double fl = std::sqrt(fx * fx + fz * fz);
     fx /= fl;
     fz /= fl;
     const double k = room.unitsPerMeter;
     const double d[3] = { p[0] - cam.at[0], p[1] - cam.at[1], p[2] - cam.at[2] };
-    const double r[3] = { (-fz * d[0] + fx * d[2]) / k, d[1] / k + room.height,
-                          -(fx * d[0] + fz * d[2]) / k - room.distance };
+    r[0] = (-fz * d[0] + fx * d[2]) / k;
+    r[1] = d[1] / k + room.height;
+    r[2] = -(fx * d[0] + fz * d[2]) / k - room.distance;
+}
+
+// Maps one world point to the eye's clip space (see the section comment).
+// In double: RoomEyeMatrix differences nearby results.
+void RoomClip(const double p[3], const CameraNote& cam, const XrView& view, const PerspDepth& depth,
+              const RoomParams& room, double clip[4]) {
+    double r[3];
+    WorldToRoom(p, cam, room, r);
     // Room -> eye: rotate by the inverse of the view pose's orientation.
     const double qx = -view.pose.orientation.x, qy = -view.pose.orientation.y, qz = -view.pose.orientation.z;
     const double qw = view.pose.orientation.w;
@@ -1553,7 +1616,7 @@ void RoomClip(const double p[3], const CameraNote& cam, const XrView& view, cons
     const double vy0 = 1.0 - ((double) cam.viewport[1] + cam.viewport[3]) / 240.0;
     const double vys = ((double) cam.viewport[3] - cam.viewport[1]) / 240.0;
     const double W = -e[2]; // distance ahead, m
-    const double sk = depth.s * k;
+    const double sk = depth.s * room.unitsPerMeter;
     clip[0] = sk * ((e[0] - cx * W) / hx - vx0 * W) / (vxs * WidescreenSqueeze());
     clip[1] = sk * ((e[1] - cy * W) / hy - vy0 * W) / vys;
     clip[3] = sk * W;
@@ -1644,6 +1707,821 @@ void RoomCheck(const float m[4][4], const CameraNote& cam) {
          std::tan(view.fov.angleDown), std::tan(view.fov.angleUp));
 }
 
+// ---------------------------------------------------------------------------
+// UI in the room view
+// ---------------------------------------------------------------------------
+//
+// gfx_draw_frame brackets the screen-space UI passes with two no-ops each and
+// notes them per main display list (port_xr_note_hud), with a kind and the
+// frame camera's matrix. For a room-view pair BeginStereoPair turns them into
+// G_SETFB (that kind's framebuffer) / G_RESETFB, so the UI draws into our
+// own Fast3D framebuffers instead of the eye images; after the pair they go
+// back to no-ops, so flat presents and later frames draw the UI as before.
+// The interact prompts and UI effects (damage numbers) are 3D objects at
+// world positions and stay unbracketed, in the scene.
+//
+//   PORT_XR_HUD_PANEL - status bar, menus, windows: a steady panel above
+//     the scene (HudPanelPose), facing the LOCAL origin; it doesn't follow
+//     the game camera's zoom.
+//   PORT_XR_HUD_PLANE - messages (speech bubbles): the frame camera's
+//     picture plane, i.e. the plane through its look-at point facing it,
+//     spanning exactly what the camera shows at that depth
+//     (HudPlaneFromCamera), so a bubble the game placed over its speaker
+//     floats over the speaker (exactly at the look-at depth).
+//   PORT_XR_HUD_PARTY - battle menus: a constant-scale projector screen
+//     standing at the stage's front left, facing the room's +z (the way
+//     the stage faces the player): its anchor's screen point (the screen's
+//     left edge at the wheel's foot, port_xr_note_hud_anchor) sits at its anchor's
+//     world point (a fixed point of the battle stage) mapped into the room
+//     like the scene (HudAnchoredLayer), so it moves with the stage and
+//     doesn't zoom with the battle camera.
+// Ranges may nest: an inner range's closing bracket switches back to the
+// outer range's framebuffer.
+//
+// The framebuffers are native 320x240 with resize on: Fast3D keeps their
+// storage at the game framebuffer's size (1920x1080) and lays them out like
+// the game screen; the whole 16:9 width is used (this port stretches the
+// status bar to the widescreen edges). They are kept non-inverted
+// (KeepHudUpright): Fast3D computes an off-screen framebuffer's scissor as
+// for a non-inverted one, so with its default invertY every scissor landed
+// mirrored and clipped away the battle menus' option lists. Both eyes'
+// passes draw them, so they are cleared to (0,0,0,0) before each. The
+// released room image copies them into thirds of the HUD swapchain
+// (CopyHudImage), each shown on a quad.
+//
+// World-anchored elements (the battle target hand) are bracketed separately
+// inside a UI range (port_xr_note_world_sprite): their brackets become
+// G_RESETFB / G_SETFB back, so they draw into the eye images, and per eye
+// their texture rectangles move by where that eye sees the anchor point
+// minus where the game put it on screen, and scale about it so their size
+// against the scene matches the game's (ShiftSprite): they sit at the
+// anchor's depth in the scene.
+
+constexpr int kHudKinds = 3;               // PORT_XR_HUD_PANEL, PORT_XR_HUD_PLANE, PORT_XR_HUD_PARTY
+constexpr const char* kHudCVar = "gXrHud"; // 1 = UI off the eye images in the room view (default)
+constexpr const char* kHudBackingCVar = "gXrHudBacking"; // debug: alpha of a black card behind the UI
+constexpr float kDefaultHudBacking = 0.0f;
+constexpr int kHudPlaneLogPresents = 300; // ~10 s
+// The picture plane shrunk by this factor about the camera's look-at point
+// (the room anchor), read live: 1 = exact alignment with the scene.
+constexpr const char* kHudScaleCVar = "gXrHudScale";
+// The steady panel (read live): its width (the 16:9 screen), and its center
+// this far above / behind the room anchor (gXrRoomHeight / gXrRoomDistance).
+constexpr const char* kHudPanelWidthCVar = "gXrHudPanelWidth";
+constexpr const char* kHudPanelUpCVar = "gXrHudPanelUp";
+constexpr const char* kHudPanelBackCVar = "gXrHudPanelBack";
+constexpr float kDefaultHudPanelWidth = 0.9f;
+constexpr float kDefaultHudPanelUp = 0.15f;
+constexpr float kDefaultHudPanelBack = 0.4f;
+// The party layer (read live): the width the 16:9 screen has on it; its
+// anchor moved this far right / up / back (m, room axes); and its lean back
+// from vertical (degrees).
+constexpr const char* kHudPartyWidthCVar = "gXrHudPartyWidth";
+constexpr const char* kHudPartyRightCVar = "gXrHudPartyRight";
+constexpr const char* kHudPartyUpCVar = "gXrHudPartyUp";
+constexpr const char* kHudPartyBackCVar = "gXrHudPartyBack";
+constexpr const char* kHudPartyTiltCVar = "gXrHudPartyTilt";
+constexpr float kDefaultHudPartyWidth = 1.28f;
+constexpr float kDefaultHudPartyRight = 0.15f;
+constexpr float kDefaultHudPartyUp = -0.03f;
+constexpr float kDefaultHudPartyBack = 0.0f;
+constexpr float kDefaultHudPartyTilt = 0.0f;
+// World sprites' size against the scene, times this (read live).
+constexpr const char* kHudSpriteScaleCVar = "gXrHudSpriteScale";
+
+struct HudRange {
+    Fast::F3DGfx* begin; // the two placeholder commands
+    Fast::F3DGfx* end;
+    int kind;
+    int parent = -1; // kind of the range it sits in, -1 = none
+};
+
+// A layer's anchor (port_xr_note_hud_anchor).
+struct HudLayerAnchor {
+    bool valid = false;
+    float world[3] = {};
+    int screen[2] = {};
+};
+
+struct WorldSprite {
+    Fast::F3DGfx* begin; // the two placeholder commands
+    Fast::F3DGfx* end;
+    const void* mtx;  // the anchor camera's matrix (a noted camera)
+    float world[3];   // anchor point
+    int screen[2];    // where the game put it on screen (native px)
+    int kind = -1;    // kind of the UI range it sits in, -1 = none
+    std::vector<std::pair<uintptr_t, uintptr_t>> saved; // the commands between the brackets, as built
+};
+
+struct Hud {
+    std::vector<HudRange> ranges;     // of the frame being drawn (port_xr_frame_main)
+    std::vector<WorldSprite> sprites; // ditto
+    int fb[kHudKinds] = { -1, -1, -1 }; // Fast3D framebuffer ids
+    bool fbFailed = false;
+    bool redirect = false; // the current pair draws the UI into fb
+    bool loggedRedirect = false;
+    XrSwapchain swapchain = XR_NULL_HANDLE; // kind k in rows [k*kHudImageH, (k+1)*kHudImageH)
+    std::vector<XrSwapchainImageOpenGLESKHR> images;
+    bool swapchainFailed = false;
+    GLuint drawFbo = 0, clearFbo = 0;
+    GLuint program = 0, vao = 0, sampler = 0;
+    GLint rectLoc = -1, backingLoc = -1;
+    const void* camMtx = nullptr; // the frame camera's matrix (port_xr_frame_main)
+    bool planeValid = false;      // plane: for the pair being drawn, from that camera
+    HudPlane plane = {};
+    bool imagePlaneValid = false; // ...as of the released image
+    HudPlane imagePlane = {};
+    HudLayerAnchor anchors[kHudKinds]; // of the frame being drawn
+    bool partyValid = false;           // party: for the pair being drawn
+    HudPlane party = {};
+    bool imagePartyValid = false; // ...as of the released image
+    HudPlane imageParty = {};
+    int logCountdown = 0;
+    int spriteLogCountdown = 0;
+};
+Hud gHud;
+
+// Noted by the game thread, per main display list: brackets, the frame
+// camera's matrix, world sprites; and the anchors set for UI elements.
+struct HudAnchor {
+    int cam;
+    float world[3];
+    int screen[2];
+    unsigned stamp; // gHudBuild when set
+};
+std::mutex gHudMutex;
+std::unordered_map<const void*, std::vector<HudRange>> gHudNotes;
+std::unordered_map<const void*, const void*> gHudCameras;
+std::unordered_map<const void*, std::vector<WorldSprite>> gSpriteNotes;
+std::unordered_map<const void*, HudAnchor> gHudAnchors;
+std::unordered_map<const void*, std::vector<std::pair<int, HudLayerAnchor>>> gLayerAnchorNotes;
+unsigned gHudBuild = 0; // frames built (port_xr_hud_frame_start)
+
+std::shared_ptr<Fast::Interpreter> HudInterpreter() {
+    Ship::Context* context = Ship::Context::GetRawInstance();
+    if (context == nullptr) {
+        return nullptr;
+    }
+    auto window = std::dynamic_pointer_cast<Fast::Fast3dWindow>(context->GetWindow());
+    return window ? window->GetInterpreterWeak().lock() : nullptr;
+}
+
+// Created on first use (render thread, between draws).
+bool CreateHudFramebuffers() {
+    static_assert(sizeof(Hud::fb) / sizeof(int) == kHudKinds, "one framebuffer per kind");
+    if (gHud.fbFailed) {
+        return false;
+    }
+    if (std::all_of(std::begin(gHud.fb), std::end(gHud.fb), [](int fb) { return fb > 0; })) {
+        return true;
+    }
+    gHud.fbFailed = true;
+    const auto interp = HudInterpreter();
+    if (!interp || interp->mRapi == nullptr) {
+        LOGE("HUD: no Fast3D interpreter");
+        return false;
+    }
+    for (int k = 0; k < kHudKinds; k++) {
+        const int fb = interp->CreateFrameBuffer(320, 240, 320, 240, 1);
+        auto it = interp->mFrameBuffers.find(fb);
+        if (fb <= 0 || it == interp->mFrameBuffers.end()) {
+            LOGE("HUD: CreateFrameBuffer failed (%d)", fb);
+            return false;
+        }
+        gHud.fb[k] = fb;
+        LOGI("HUD framebuffer %d for the %s (%ux%u for 320x240)", fb,
+             k == PORT_XR_HUD_PANEL ? "panel" : k == PORT_XR_HUD_PLANE ? "plane" : "party layer",
+             it->second.applied_width, it->second.applied_height);
+    }
+    gHud.fbFailed = false;
+    return true;
+}
+
+// Keeps the UI framebuffers non-inverted (see the section comment). Fast3D
+// creates them, and re-creates them on a resize, with invertY on; setting
+// the same size again only rebinds. Between draws.
+void KeepHudUpright() {
+    const auto interp = HudInterpreter();
+    if (!interp || interp->mRapi == nullptr) {
+        return;
+    }
+    GLint prev = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev);
+    for (int k = 0; k < kHudKinds; k++) {
+        auto it = interp->mFrameBuffers.find(gHud.fb[k]);
+        if (gHud.fb[k] >= 0 && it != interp->mFrameBuffers.end()) {
+            interp->mRapi->UpdateFramebufferParameters(gHud.fb[k], it->second.applied_width,
+                                                       it->second.applied_height, 1, false, true, true, true);
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, (GLuint) prev);
+}
+
+// A UI framebuffer's color texture and its current storage size, or 0.
+GLuint HudTexture(int kind, int* w = nullptr, int* h = nullptr) {
+    const auto interp = HudInterpreter();
+    if (gHud.fb[kind] < 0 || !interp || interp->mRapi == nullptr) {
+        return 0;
+    }
+    auto it = interp->mFrameBuffers.find(gHud.fb[kind]);
+    if (it == interp->mFrameBuffers.end()) {
+        return 0;
+    }
+    if (w != nullptr && h != nullptr) {
+        *w = (int) it->second.applied_width;
+        *h = (int) it->second.applied_height;
+    }
+    return (GLuint) (uintptr_t) interp->mRapi->GetFramebufferTextureId(gHud.fb[kind]);
+}
+
+void SetFb(Fast::F3DGfx* cmd, int fb) {
+    cmd->words.w0 = (uintptr_t) 0x21 << 24; // G_SETFB
+    cmd->words.w1 = (uintptr_t) fb;
+}
+
+void ResetFb(Fast::F3DGfx* cmd) {
+    cmd->words.w0 = (uintptr_t) 0x22 << 24; // G_RESETFB
+    cmd->words.w1 = 0;
+}
+
+void NoOp(Fast::F3DGfx* cmd) {
+    cmd->words.w0 = cmd->words.w1 = 0; // G_NOOP
+}
+
+// The brackets become switches to the UI framebuffers and back (redirect),
+// or no-ops.
+void WriteHudBrackets(bool redirect) {
+    for (const HudRange& range : gHud.ranges) {
+        if (redirect) {
+            SetFb(range.begin, gHud.fb[range.kind]);
+            if (range.parent >= 0) {
+                SetFb(range.end, gHud.fb[range.parent]); // back to the outer range's layer
+            } else {
+                ResetFb(range.end);
+            }
+        } else {
+            NoOp(range.begin);
+            NoOp(range.end);
+        }
+    }
+    for (const WorldSprite& sprite : gHud.sprites) {
+        if (redirect && sprite.kind >= 0) {
+            ResetFb(sprite.begin); // into the eye image...
+            SetFb(sprite.end, gHud.fb[sprite.kind]); // ...and back to the range's framebuffer
+        } else {
+            NoOp(sprite.begin);
+            NoOp(sprite.end);
+        }
+    }
+}
+
+// Puts the world sprites' commands back as the game built them.
+void RestoreSprites() {
+    for (const WorldSprite& sprite : gHud.sprites) {
+        Fast::F3DGfx* cmd = sprite.begin + 1;
+        for (const auto& words : sprite.saved) {
+            cmd->words.w0 = words.first;
+            cmd->words.w1 = words.second;
+            ++cmd;
+        }
+    }
+}
+
+int SignExtend24(uintptr_t v) {
+    return (int) ((uint32_t) (v & 0xFFFFFF) << 8) >> 8;
+}
+
+// Transforms a world sprite's texture rectangles (as built): native x
+// becomes px + f * (x - ax), likewise y, and the texture steps are divided
+// by f. G_TEXRECT_WIDE (24-bit signed 10.2, then s/t and steps) is scaled;
+// G_TEXRECT/FLIP (12-bit 10.2) is only moved.
+void TransformSpriteRects(const WorldSprite& sprite, float ax, float ay, float px, float py, float f) {
+    auto to4 = [&](int v4, float a, float p) { return (int) std::lround(4.0f * (p + f * (v4 / 4.0f - a))); };
+    for (Fast::F3DGfx* cmd = sprite.begin + 1; cmd < sprite.end; ++cmd) {
+        const uint32_t op = (uint32_t) ((cmd->words.w0 >> 24) & 0xFF);
+        if (op == 0x37 && cmd + 2 < sprite.end) { // G_TEXRECT_WIDE: lrx, lry; ulx, uly; s, t, dsdx, dtdy
+            Fast::F3DGfx* ul = cmd + 1;
+            Fast::F3DGfx* tex = cmd + 2;
+            auto put = [](uintptr_t& word, int v) { word = (word & ~(uintptr_t) 0xFFFFFF) | ((uint32_t) v & 0xFFFFFF); };
+            put(cmd->words.w0, to4(SignExtend24(cmd->words.w0), ax, px));
+            put(cmd->words.w1, to4(SignExtend24(cmd->words.w1), ay, py));
+            put(ul->words.w0, to4(SignExtend24(ul->words.w0), ax, px));
+            put(ul->words.w1, to4(SignExtend24(ul->words.w1), ay, py));
+            const int dsdx = (int16_t) ((tex->words.w1 >> 16) & 0xFFFF);
+            const int dtdy = (int16_t) (tex->words.w1 & 0xFFFF);
+            const int sdx = std::clamp((int) std::lround(dsdx / f), -32768, 32767);
+            const int tdy = std::clamp((int) std::lround(dtdy / f), -32768, 32767);
+            tex->words.w1 = (tex->words.w1 & ~(uintptr_t) 0xFFFFFFFF) | ((uint32_t) (uint16_t) sdx << 16) |
+                            (uint32_t) (uint16_t) tdy;
+            cmd += 2;
+        } else if (op == 0xE4 || op == 0xE5) { // G_TEXRECT(FLIP): w0 lrx, lry; w1 ulx, uly
+            const int dx4 = (int) std::lround(4.0f * (px - ax)), dy4 = (int) std::lround(4.0f * (py - ay));
+            auto move = [&](uintptr_t& word) {
+                const int x = std::clamp((int) ((word >> 12) & 0xFFF) + dx4, 0, 0xFFF);
+                const int y = std::clamp((int) (word & 0xFFF) + dy4, 0, 0xFFF);
+                word = (word & ~(uintptr_t) 0xFFFFFF) | ((uintptr_t) x << 12) | (uintptr_t) y;
+            };
+            move(cmd->words.w0);
+            move(cmd->words.w1);
+            cmd += 2; // the two RDPHALF words
+        }
+    }
+}
+
+// Where matrix m (clip = [world 1]*m) shows world point p, in native screen
+// px (the coordinates texture rectangles use: Fast3D squeezes both alike).
+bool NativeScreenPoint(const float m[4][4], const CameraNote& cam, const float p[3], float* px, float* py) {
+    float clip[4];
+    Project(m, p, clip);
+    if (clip[3] <= 1e-6f) {
+        return false; // behind the eye
+    }
+    const float squeeze = WidescreenSqueeze();
+    const float vx0 = (cam.viewport[0] + cam.viewport[2]) / 320.0f - 1.0f;
+    const float vxs = (cam.viewport[2] - cam.viewport[0]) / 320.0f;
+    const float vy0 = 1.0f - (cam.viewport[1] + cam.viewport[3]) / 240.0f;
+    const float vys = (cam.viewport[3] - cam.viewport[1]) / 240.0f;
+    const float ndcX = vx0 + vxs * squeeze * clip[0] / clip[3];
+    const float ndcY = vy0 + vys * clip[1] / clip[3];
+    *px = 160.0f * (ndcX / squeeze + 1.0f);
+    *py = 120.0f * (1.0f - ndcY);
+    return true;
+}
+
+// Per eye: moves a world sprite to where eye matrix m (the anchor camera's
+// replacement) shows its anchor, keeping the game's offset from it, scaled
+// by how much bigger the eye sees the anchor's surroundings than the game
+// camera (matrix game) does: 10 units of world up at the anchor, compared.
+void ShiftSprite(const WorldSprite& sprite, const float game[4][4], const float m[4][4], const CameraNote& cam) {
+    const float up[3] = { sprite.world[0], sprite.world[1] + 10.0f, sprite.world[2] };
+    float px, py, ux, uy, gx, gy, gux, guy;
+    if (!NativeScreenPoint(m, cam, sprite.world, &px, &py) || !NativeScreenPoint(m, cam, up, &ux, &uy) ||
+        !NativeScreenPoint(game, cam, sprite.world, &gx, &gy) || !NativeScreenPoint(game, cam, up, &gux, &guy)) {
+        return;
+    }
+    const float gameLen = std::hypot(gux - gx, guy - gy), eyeLen = std::hypot(ux - px, uy - py);
+    const float extra = std::clamp(CVarGetFloat(kHudSpriteScaleCVar, 1.0f), 0.1f, 4.0f);
+    const float f = std::clamp(gameLen > 1e-3f ? extra * eyeLen / gameLen : extra, 0.05f, 4.0f);
+    TransformSpriteRects(sprite, (float) sprite.screen[0], (float) sprite.screen[1], px, py, f);
+    if (--gHud.spriteLogCountdown <= 0) {
+        gHud.spriteLogCountdown = kHudPlaneLogPresents;
+        LOGI("World sprite: anchor %.0f %.0f %.0f, game screen %d,%d -> eye %.1f,%.1f, scale %.2f", sprite.world[0],
+             sprite.world[1], sprite.world[2], sprite.screen[0], sprite.screen[1], px, py, f);
+    }
+}
+
+// Clears the UI framebuffers to (0,0,0,0), keeping the GL state.
+void ClearHudTextures() {
+    if (gHud.clearFbo == 0) {
+        glGenFramebuffers(1, &gHud.clearFbo);
+    }
+    GLint draw = 0;
+    GLfloat clearColor[4] = {};
+    GLboolean colorMask[4] = {};
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, clearColor);
+    glGetBooleanv(GL_COLOR_WRITEMASK, colorMask);
+    const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    for (int k = 0; k < kHudKinds; k++) {
+        const GLuint texture = HudTexture(k);
+        if (texture == 0) {
+            continue;
+        }
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gHud.clearFbo);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+    glColorMask(colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
+    if (scissor) {
+        glEnable(GL_SCISSOR_TEST);
+    }
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint) draw);
+}
+
+// At the start of each stereo pair: room-view pairs draw the UI into the UI
+// framebuffers (gXrHud on, brackets noted for this frame).
+void PatchHud(bool room) {
+    const bool redirect = room && CVarGetInteger(kHudCVar, 1) != 0 && !gHud.ranges.empty() && gHud.program != 0 &&
+                          CreateHudFramebuffers();
+    if (redirect) {
+        KeepHudUpright();
+    }
+    WriteHudBrackets(redirect);
+    if (redirect != gHud.loggedRedirect) {
+        gHud.loggedRedirect = redirect;
+        LOGI("UI %s (%zu range(s))", redirect ? "on its layers" : "in the eye images", gHud.ranges.size());
+    }
+    gHud.redirect = redirect;
+}
+
+// The copy into the HUD swapchain: a UI framebuffer (uRect: offset and size
+// in texture coordinates) over a black card of alpha uBacking, premultiplied.
+constexpr const char* kHudCopyFs = R"(#version 300 es
+precision highp float;
+uniform sampler2D uHud;
+uniform vec4 uRect;
+uniform float uBacking;
+in vec2 vPos;
+out vec4 oColor;
+void main() {
+    vec4 c = texture(uHud, uRect.xy + vPos * uRect.zw);
+    oColor = c + (1.0 - c.a) * vec4(0.0, 0.0, 0.0, uBacking);
+}
+)";
+
+// Failure only costs the UI layers (the UI then stays in the eye images).
+void CreateHudCopy() {
+    const GLuint vs = CompileShader(GL_VERTEX_SHADER, kGameCopyVs);
+    const GLuint fs = CompileShader(GL_FRAGMENT_SHADER, kHudCopyFs);
+    if (vs != 0 && fs != 0) {
+        GLuint program = glCreateProgram();
+        glAttachShader(program, vs);
+        glAttachShader(program, fs);
+        glLinkProgram(program);
+        GLint ok = GL_FALSE;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (ok) {
+            gHud.program = program;
+            gHud.rectLoc = glGetUniformLocation(program, "uRect");
+            gHud.backingLoc = glGetUniformLocation(program, "uBacking");
+            GLint prevProgram = 0;
+            glGetIntegerv(GL_CURRENT_PROGRAM, &prevProgram);
+            glUseProgram(program);
+            glUniform1i(glGetUniformLocation(program, "uHud"), 0);
+            glUseProgram((GLuint) prevProgram);
+            glGenVertexArrays(1, &gHud.vao);
+            // Linear and clamped whatever Fast3D set on its textures: the copy
+            // scales 1920x1080 down to the swapchain.
+            glGenSamplers(1, &gHud.sampler);
+            glSamplerParameteri(gHud.sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glSamplerParameteri(gHud.sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glSamplerParameteri(gHud.sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glSamplerParameteri(gHud.sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        } else {
+            LOGE("HUD copy program failed to link");
+            glDeleteProgram(program);
+        }
+    }
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+}
+
+bool CreateHudSwapchain() {
+    if (gHud.swapchain != XR_NULL_HANDLE || gHud.swapchainFailed) {
+        return gHud.swapchain != XR_NULL_HANDLE;
+    }
+    gHud.swapchainFailed = true;
+    XrSwapchainCreateInfo info{ XR_TYPE_SWAPCHAIN_CREATE_INFO };
+    info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    info.format = gXr.srgbWriteControl ? GL_SRGB8_ALPHA8 : GL_RGBA8; // as the main swapchain
+    info.sampleCount = 1;
+    info.width = kHudImageW;
+    info.height = kHudKinds * kHudImageH;
+    info.faceCount = 1;
+    info.arraySize = 1;
+    info.mipCount = 1;
+    if (!Ok(xrCreateSwapchain(gXr.session, &info, &gHud.swapchain), "xrCreateSwapchain (HUD)")) {
+        gHud.swapchain = XR_NULL_HANDLE;
+        return false;
+    }
+    uint32_t count = 0;
+    xrEnumerateSwapchainImages(gHud.swapchain, 0, &count, nullptr);
+    gHud.images.assign(count, { XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR });
+    if (count == 0 || !Ok(xrEnumerateSwapchainImages(gHud.swapchain, count, &count,
+                                                     reinterpret_cast<XrSwapchainImageBaseHeader*>(gHud.images.data())),
+                          "xrEnumerateSwapchainImages (HUD)")) {
+        return false;
+    }
+    glGenFramebuffers(1, &gHud.drawFbo);
+    gHud.swapchainFailed = false;
+    LOGI("HUD swapchain %dx%d, %u images", kHudImageW, kHudKinds * kHudImageH, count);
+    return true;
+}
+
+XrSwapchain HudSwapchain() {
+    return gHud.swapchain;
+}
+
+// Diagnostic (gXrHudCoverage 1, read live), every ~5 s while the UI is on its layers: each UI framebuffer
+// scaled down to 64x36, read back, and the share of pixels with alpha > 0
+// logged with their bounding box (cells; row 0 = top of the screen if the
+// framebuffer is upright, i.e. GL top row).
+constexpr int kCoverageW = 64, kCoverageH = 36, kCoveragePresents = 150;
+
+void LogHudCoverage() {
+    static GLuint tex = 0, drawFbo = 0, readFbo = 0;
+    static int countdown = 0;
+    if (CVarGetInteger("gXrHudCoverage", 0) == 0 || --countdown > 0) {
+        return;
+    }
+    countdown = kCoveragePresents;
+    if (tex == 0) {
+        GLint prevTex = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, kCoverageW, kCoverageH);
+        glBindTexture(GL_TEXTURE_2D, (GLuint) prevTex);
+        glGenFramebuffers(1, &drawFbo);
+        glGenFramebuffers(1, &readFbo);
+    }
+    BlitState blit;
+    GLint packAlign = 4;
+    glGetIntegerv(GL_PACK_ALIGNMENT, &packAlign);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    std::string line;
+    for (int k = 0; k < kHudKinds; k++) {
+        int w = 0, h = 0;
+        const GLuint src = HudTexture(k, &w, &h);
+        if (src == 0 || w <= 0 || h <= 0) {
+            line += " | none";
+            continue;
+        }
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, readFbo);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src, 0);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, drawFbo);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glBlitFramebuffer(0, 0, w, h, 0, 0, kCoverageW, kCoverageH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, drawFbo);
+        uint8_t px[kCoverageW * kCoverageH * 4];
+        glReadPixels(0, 0, kCoverageW, kCoverageH, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        int count = 0, x0 = kCoverageW, x1 = -1, y0 = kCoverageH, y1 = -1;
+        for (int y = 0; y < kCoverageH; y++) {
+            for (int x = 0; x < kCoverageW; x++) {
+                if (px[(y * kCoverageW + x) * 4 + 3] > 8) {
+                    const int row = kCoverageH - 1 - y; // GL rows are bottom-up
+                    count++;
+                    x0 = std::min(x0, x), x1 = std::max(x1, x), y0 = std::min(y0, row), y1 = std::max(y1, row);
+                }
+            }
+        }
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), " | %s %.1f%% cols %d-%d rows %d-%d",
+                      k == PORT_XR_HUD_PANEL ? "panel" : k == PORT_XR_HUD_PLANE ? "plane" : "party",
+                      100.0f * count / (kCoverageW * kCoverageH), x0, x1, y0, y1);
+        line += buf;
+    }
+    glPixelStorei(GL_PACK_ALIGNMENT, packAlign);
+    LOGI("UI coverage%s", line.c_str());
+}
+
+// Copies the UI of the pair just drawn into the HUD swapchain (with the room
+// image being released). False: no UI layers for this image.
+bool CopyHudImage() {
+    if (!gHud.redirect || !CreateHudSwapchain()) {
+        return false;
+    }
+    uint32_t index = 0;
+    XrSwapchainImageAcquireInfo acquire{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+    XrSwapchainImageWaitInfo wait{ XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+    wait.timeout = XR_INFINITE_DURATION;
+    if (!Ok(xrAcquireSwapchainImage(gHud.swapchain, &acquire, &index), "xrAcquireSwapchainImage (HUD)") ||
+        !Ok(xrWaitSwapchainImage(gHud.swapchain, &wait), "xrWaitSwapchainImage (HUD)")) {
+        return false;
+    }
+    {
+        BlitState blit;
+        DrawState state;
+        const float backing = std::clamp(CVarGetFloat(kHudBackingCVar, kDefaultHudBacking), 0.0f, 1.0f);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gHud.drawFbo);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gHud.images[index].image, 0);
+        glUseProgram(gHud.program);
+        glUniform4f(gHud.rectLoc, 0.0f, 0.0f, 1.0f, 1.0f);
+        glUniform1f(gHud.backingLoc, backing);
+        glBindVertexArray(gHud.vao);
+        glActiveTexture(GL_TEXTURE0);
+        glBindSampler(0, gHud.sampler);
+        for (int k = 0; k < kHudKinds; k++) {
+            glViewport(0, k * kHudImageH, kHudImageW, kHudImageH);
+            const GLuint texture = HudTexture(k);
+            if (texture == 0) {
+                glClearColor(0.0f, 0.0f, 0.0f, 0.0f); // scissor is off (BlitState)
+                glClear(GL_COLOR_BUFFER_BIT);
+                continue;
+            }
+            glBindTexture(GL_TEXTURE_2D, texture);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+    }
+    LogHudCoverage();
+    gHud.imagePlaneValid = gHud.planeValid;
+    gHud.imagePlane = gHud.plane;
+    gHud.imagePartyValid = gHud.partyValid;
+    gHud.imageParty = gHud.party;
+    XrSwapchainImageReleaseInfo release{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+    return Ok(xrReleaseSwapchainImage(gHud.swapchain, &release), "xrReleaseSwapchainImage (HUD)");
+}
+
+XrQuaternionf QuatMul(const XrQuaternionf& a, const XrQuaternionf& b) {
+    return { a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+             a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z };
+}
+
+// Turns a quad's +z (the side it shows) from `at` toward the LOCAL origin
+// (the default head position), keeping it upright.
+XrQuaternionf FacingOrigin(const XrVector3f& at) {
+    const float len = std::max(std::sqrt(at.x * at.x + at.y * at.y + at.z * at.z), 1e-4f);
+    const float nx = -at.x / len, ny = -at.y / len, nz = -at.z / len;
+    const float yaw = std::atan2(nx, nz), pitch = -std::asin(std::clamp(ny, -1.0f, 1.0f));
+    return QuatMul({ 0.0f, std::sin(0.5f * yaw), 0.0f, std::cos(0.5f * yaw) },
+                   { std::sin(0.5f * pitch), 0.0f, 0.0f, std::cos(0.5f * pitch) });
+}
+
+// The steady panel (see the section comment), read live.
+HudPlane HudPanelPose() {
+    const RoomParams room = ReadRoomParams();
+    const float width = std::clamp(CVarGetFloat(kHudPanelWidthCVar, kDefaultHudPanelWidth), 0.1f, 4.0f);
+    const float up = std::clamp(CVarGetFloat(kHudPanelUpCVar, kDefaultHudPanelUp), -2.0f, 2.0f);
+    const float back = std::clamp(CVarGetFloat(kHudPanelBackCVar, kDefaultHudPanelBack), -2.0f, 4.0f);
+    HudPlane panel;
+    panel.width = width;
+    panel.height = width / kRenderAspect;
+    panel.pose.position = { 0.0f, room.height + up, -room.distance - back };
+    panel.pose.orientation = FacingOrigin(panel.pose.position);
+    return panel;
+}
+
+const HudPlane* HudImagePlane() {
+    return gHud.imagePlaneValid ? &gHud.imagePlane : nullptr;
+}
+
+const HudPlane* HudImageParty() {
+    return gHud.imagePartyValid ? &gHud.imageParty : nullptr;
+}
+
+// The party layer for the pair being drawn (see the section comment): its
+// anchor mapped into the room like the scene (frame camera `cam`), moved by
+// the offsets; the layer faces room +z (leaning back by the tilt), at a
+// constant scale, with the anchor's screen point on that spot.
+bool HudAnchoredLayer(const CameraNote& cam, const HudLayerAnchor& anchor, HudPlane* out) {
+    const float fx = cam.at[0] - cam.eye[0], fz = cam.at[2] - cam.eye[2];
+    if (!anchor.valid || fx * fx + fz * fz < 1e-6f) {
+        return false;
+    }
+    const RoomParams room = ReadRoomParams();
+    const double world[3] = { anchor.world[0], anchor.world[1], anchor.world[2] };
+    double r[3];
+    WorldToRoom(world, cam, room, r);
+    const float width = std::clamp(CVarGetFloat(kHudPartyWidthCVar, kDefaultHudPartyWidth), 0.1f, 4.0f);
+    const float offsetRight = std::clamp(CVarGetFloat(kHudPartyRightCVar, kDefaultHudPartyRight), -2.0f, 2.0f);
+    const float up = std::clamp(CVarGetFloat(kHudPartyUpCVar, kDefaultHudPartyUp), -2.0f, 2.0f);
+    const float back = std::clamp(CVarGetFloat(kHudPartyBackCVar, kDefaultHudPartyBack), -2.0f, 2.0f);
+    const float tilt = std::clamp(CVarGetFloat(kHudPartyTiltCVar, kDefaultHudPartyTilt), -60.0f, 60.0f) *
+                       (float) M_PI / 180.0f;
+    const XrVector3f spot = { (float) r[0] + offsetRight, (float) r[1] + up, (float) r[2] - back };
+    // Leaning back = turning about +x by -tilt (the top goes away from the viewer).
+    const XrQuaternionf facing = { std::sin(-0.5f * tilt), 0.0f, 0.0f, std::cos(-0.5f * tilt) };
+    const float metersPerPx = width / (240.0f * kRenderAspect);
+    // The screen center relative to the anchor's screen point (native y down).
+    const float dx = (160.0f - anchor.screen[0]) * metersPerPx, dy = (anchor.screen[1] - 120.0f) * metersPerPx;
+    const float ax[3] = { 1.0f, 0.0f, 0.0f }, ay[3] = { 0.0f, 1.0f, 0.0f };
+    float right[3], upAxis[3];
+    Rotate(facing, ax, right);
+    Rotate(facing, ay, upAxis);
+    out->pose.orientation = facing;
+    out->pose.position = { spot.x + dx * right[0] + dy * upAxis[0], spot.y + dx * right[1] + dy * upAxis[1],
+                           spot.z + dx * right[2] + dy * upAxis[2] };
+    out->width = width;
+    out->height = width / kRenderAspect;
+    return true;
+}
+
+// The world point the camera (game matrix m: clip = [world 1]*m) shows at
+// native screen pixel (px, py), at the depth of its look-at point. Solves
+// clip.x = nx*w0, clip.y = ny*w0, clip.w = w0 for the point.
+bool PicturePoint(const float m[4][4], const CameraNote& cam, double px, double py, double out[3]) {
+    const double vcx = 0.5 * ((double) cam.viewport[0] + cam.viewport[2]);
+    const double vhw = 0.5 * ((double) cam.viewport[2] - cam.viewport[0]);
+    const double vcy = 0.5 * ((double) cam.viewport[1] + cam.viewport[3]);
+    const double vhh = 0.5 * ((double) cam.viewport[3] - cam.viewport[1]);
+    if (vhw <= 0.0 || vhh <= 0.0) {
+        return false;
+    }
+    const double nx = (px - vcx) / vhw, ny = (vcy - py) / vhh;
+    const double w0 = cam.at[0] * (double) m[0][3] + cam.at[1] * (double) m[1][3] + cam.at[2] * (double) m[2][3] +
+                      m[3][3];
+    if (w0 <= 0.0) {
+        return false;
+    }
+    const int cols[3] = { 0, 1, 3 };
+    const double target[3] = { nx * w0, ny * w0, w0 };
+    double a[3][3], b[3];
+    for (int r = 0; r < 3; r++) {
+        for (int i = 0; i < 3; i++) {
+            a[r][i] = m[i][cols[r]];
+        }
+        b[r] = target[r] - m[3][cols[r]];
+    }
+    auto det3 = [](const double x[3][3]) {
+        return x[0][0] * (x[1][1] * x[2][2] - x[1][2] * x[2][1]) - x[0][1] * (x[1][0] * x[2][2] - x[1][2] * x[2][0]) +
+               x[0][2] * (x[1][0] * x[2][1] - x[1][1] * x[2][0]);
+    };
+    const double det = det3(a);
+    if (std::fabs(det) < 1e-12) {
+        return false;
+    }
+    for (int i = 0; i < 3; i++) { // Cramer's rule
+        double ai[3][3];
+        std::memcpy(ai, a, sizeof(ai));
+        for (int r = 0; r < 3; r++) {
+            ai[r][i] = b[r];
+        }
+        out[i] = det3(ai) / det;
+    }
+    return true;
+}
+
+// The messages' quad for the pair being drawn: the frame camera's picture
+// plane (see the section comment), mapped into the room like the scene. The
+// quad shows the whole 16:9 screen (native x 160 +- 120 * aspect).
+bool HudPlaneFromCamera(const float m[4][4], const CameraNote& cam) {
+    const float fx = cam.at[0] - cam.eye[0], fz = cam.at[2] - cam.eye[2];
+    if (fx * fx + fz * fz < 1e-6f) {
+        return false;
+    }
+    const RoomParams room = ReadRoomParams();
+    double wc[3], wr[3], wu[3];
+    if (!PicturePoint(m, cam, 160.0, 120.0, wc) || !PicturePoint(m, cam, 160.0 + 120.0 * kRenderAspect, 120.0, wr) ||
+        !PicturePoint(m, cam, 160.0, 0.0, wu)) {
+        return false;
+    }
+    double c[3], r[3], u[3];
+    WorldToRoom(wc, cam, room, c);
+    WorldToRoom(wr, cam, room, r);
+    WorldToRoom(wu, cam, room, u);
+    double x[3] = { r[0] - c[0], r[1] - c[1], r[2] - c[2] };
+    double y[3] = { u[0] - c[0], u[1] - c[1], u[2] - c[2] };
+    const double halfW = std::sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
+    if (halfW < 1e-6) {
+        return false;
+    }
+    for (double& v : x) {
+        v /= halfW;
+    }
+    const double dot = x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+    for (int i = 0; i < 3; i++) {
+        y[i] -= dot * x[i];
+    }
+    const double halfH = std::sqrt(y[0] * y[0] + y[1] * y[1] + y[2] * y[2]);
+    if (halfH < 1e-6) {
+        return false;
+    }
+    for (double& v : y) {
+        v /= halfH;
+    }
+    // z = x cross y: toward the camera, the side the quad faces.
+    const double z[3] = { x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0] };
+    // Rotation matrix (columns x, y, z) -> quaternion.
+    const double trace = x[0] + y[1] + z[2];
+    double qw, qx, qy, qz;
+    if (trace > 0.0) {
+        const double s = 2.0 * std::sqrt(trace + 1.0);
+        qw = 0.25 * s;
+        qx = (y[2] - z[1]) / s;
+        qy = (z[0] - x[2]) / s;
+        qz = (x[1] - y[0]) / s;
+    } else if (x[0] > y[1] && x[0] > z[2]) {
+        const double s = 2.0 * std::sqrt(1.0 + x[0] - y[1] - z[2]);
+        qw = (y[2] - z[1]) / s;
+        qx = 0.25 * s;
+        qy = (y[0] + x[1]) / s;
+        qz = (z[0] + x[2]) / s;
+    } else if (y[1] > z[2]) {
+        const double s = 2.0 * std::sqrt(1.0 + y[1] - x[0] - z[2]);
+        qw = (z[0] - x[2]) / s;
+        qx = (y[0] + x[1]) / s;
+        qy = 0.25 * s;
+        qz = (z[1] + y[2]) / s;
+    } else {
+        const double s = 2.0 * std::sqrt(1.0 + z[2] - x[0] - y[1]);
+        qw = (x[1] - y[0]) / s;
+        qx = (z[0] + x[2]) / s;
+        qy = (z[1] + y[2]) / s;
+        qz = 0.25 * s;
+    }
+    const double scale = std::clamp(CVarGetFloat(kHudScaleCVar, 1.0f), 0.05f, 2.0f);
+    double anchorWorld[3] = { cam.at[0], cam.at[1], cam.at[2] }, a[3];
+    WorldToRoom(anchorWorld, cam, room, a);
+    HudPlane& plane = gHud.plane;
+    plane.pose.orientation = { (float) qx, (float) qy, (float) qz, (float) qw };
+    plane.pose.position = { (float) (a[0] + scale * (c[0] - a[0])), (float) (a[1] + scale * (c[1] - a[1])),
+                            (float) (a[2] + scale * (c[2] - a[2])) };
+    plane.width = (float) (2.0 * halfW * scale);
+    plane.height = (float) (2.0 * halfH * scale);
+    if (--gHud.logCountdown <= 0) {
+        gHud.logCountdown = kHudPlaneLogPresents;
+        LOGI("HUD plane: center %+.2f %+.2f %+.2f m, %.2f x %.2f m (scale %.2f), normal %+.2f %+.2f %+.2f, skew %.3f, "
+             "viewport %.0f,%.0f-%.0f,%.0f",
+             plane.pose.position.x, plane.pose.position.y, plane.pose.position.z, plane.width, plane.height, scale, z[0], z[1], z[2], dot / halfH, cam.viewport[0],
+             cam.viewport[1], cam.viewport[2], cam.viewport[3]);
+    }
+    return true;
+}
+
 // Decides, at the start of each stereo pair, whether it is drawn as a room
 // view, and samples the eye poses for the refresh the pair is due on.
 void BeginStereoPair() {
@@ -1660,6 +2538,7 @@ void BeginStereoPair() {
         LOGI("Room view %s", room ? "on" : "off");
     }
     gXr.pairRoom = room;
+    PatchHud(room);
 }
 
 bool Initialize() {
@@ -1668,6 +2547,7 @@ bool Initialize() {
         return false;
     }
     CreateGameCopy();
+    CreateHudCopy();
     if (!AttachPad()) {
         LOGE("Continuing without Touch controller input");
     }
@@ -1713,6 +2593,118 @@ extern "C" void port_xr_frame_background(const void* list) {
     gXr.cutoutDraw = cutout;
 }
 
+extern "C" void port_xr_hud_frame_start(const void* list, const void* camMtx) {
+    std::lock_guard<std::mutex> lock(gHudMutex);
+    gHudNotes[list].clear();
+    gSpriteNotes[list].clear();
+    gLayerAnchorNotes[list].clear();
+    gHudCameras[list] = camMtx;
+    ++gHudBuild;
+}
+
+extern "C" void port_xr_note_hud_anchor(const void* list, int kind, const float world[3], int screenX,
+                                        int screenY) {
+    if (kind < 0 || kind >= kHudKinds) {
+        return;
+    }
+    HudLayerAnchor anchor;
+    anchor.valid = true;
+    std::memcpy(anchor.world, world, sizeof(anchor.world));
+    anchor.screen[0] = screenX;
+    anchor.screen[1] = screenY;
+    std::lock_guard<std::mutex> lock(gHudMutex);
+    gLayerAnchorNotes[list].emplace_back(kind, anchor);
+}
+
+extern "C" void port_xr_note_hud(const void* list, void* begin, void* end, int kind) {
+    if (begin == nullptr || end <= begin || kind < 0 || kind >= kHudKinds) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(gHudMutex);
+    gHudNotes[list].push_back({ static_cast<Fast::F3DGfx*>(begin), static_cast<Fast::F3DGfx*>(end), kind });
+}
+
+extern "C" void port_xr_anchor_hud_element(const void* elem, int camID, float x, float y, float z, int screenX,
+                                           int screenY) {
+    std::lock_guard<std::mutex> lock(gHudMutex);
+    gHudAnchors[elem] = { camID, { x, y, z }, { screenX, screenY }, gHudBuild };
+}
+
+extern "C" int port_xr_hud_element_camera(const void* elem) {
+    std::lock_guard<std::mutex> lock(gHudMutex);
+    auto it = gHudAnchors.find(elem);
+    return it != gHudAnchors.end() && gHudBuild - it->second.stamp <= 2 ? it->second.cam : -1;
+}
+
+extern "C" void port_xr_note_world_sprite(const void* list, void* begin, void* end, const void* elem,
+                                          const void* mtx) {
+    if (begin == nullptr || end <= begin) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(gHudMutex);
+    auto it = gHudAnchors.find(elem);
+    if (it == gHudAnchors.end()) {
+        return;
+    }
+    WorldSprite sprite;
+    sprite.begin = static_cast<Fast::F3DGfx*>(begin);
+    sprite.end = static_cast<Fast::F3DGfx*>(end);
+    sprite.mtx = mtx;
+    std::memcpy(sprite.world, it->second.world, sizeof(sprite.world));
+    sprite.screen[0] = it->second.screen[0];
+    sprite.screen[1] = it->second.screen[1];
+    gSpriteNotes[list].push_back(std::move(sprite));
+}
+
+extern "C" void port_xr_frame_main(const void* list) {
+    std::lock_guard<std::mutex> lock(gHudMutex);
+    auto it = gHudNotes.find(list);
+    if (it != gHudNotes.end()) {
+        gHud.ranges = it->second;
+    } else {
+        gHud.ranges.clear();
+    }
+    auto cam = gHudCameras.find(list);
+    gHud.camMtx = cam != gHudCameras.end() ? cam->second : nullptr;
+    auto sprites = gSpriteNotes.find(list);
+    gHud.sprites.clear();
+    if (sprites != gSpriteNotes.end()) {
+        gHud.sprites = sprites->second;
+    }
+    for (HudLayerAnchor& anchor : gHud.anchors) {
+        anchor.valid = false;
+    }
+    if (auto anchors = gLayerAnchorNotes.find(list); anchors != gLayerAnchorNotes.end()) {
+        for (const auto& [kind, anchor] : anchors->second) {
+            gHud.anchors[kind] = anchor;
+        }
+    }
+    // The innermost UI range around [begin, end], or null.
+    auto enclosing = [](const Fast::F3DGfx* begin, const Fast::F3DGfx* end, const HudRange* self) {
+        const HudRange* best = nullptr;
+        for (const HudRange& range : gHud.ranges) {
+            if (&range != self && begin > range.begin && end < range.end && (!best || range.begin > best->begin)) {
+                best = &range;
+            }
+        }
+        return best;
+    };
+    for (HudRange& range : gHud.ranges) {
+        const HudRange* outer = enclosing(range.begin, range.end, &range);
+        range.parent = outer ? outer->kind : -1;
+    }
+    // Keep each sprite's commands as built (they are moved per eye), and
+    // find the UI range it sits in.
+    for (WorldSprite& sprite : gHud.sprites) {
+        sprite.saved.clear();
+        for (Fast::F3DGfx* cmd = sprite.begin + 1; cmd < sprite.end; ++cmd) {
+            sprite.saved.emplace_back(cmd->words.w0, cmd->words.w1);
+        }
+        const HudRange* outer = enclosing(sprite.begin, sprite.end, nullptr);
+        sprite.kind = outer ? outer->kind : -1;
+    }
+}
+
 extern "C" void port_xr_set_present_rate(int fps) {
     gXr.presentRate = fps;
 }
@@ -1725,6 +2717,17 @@ extern "C" void port_xr_set_eye(int eye) {
     gXr.eye = eye;
     if (eye == 0) {
         BeginStereoPair();
+    }
+    if (eye >= 0 && gHud.redirect) {
+        ClearHudTextures(); // both eyes draw the UI; blending must not stack
+    }
+    if (eye < 0) {
+        // Pair done: later draws of this list (flat presents) draw the UI as built.
+        if (gHud.redirect) {
+            WriteHudBrackets(false);
+            gHud.redirect = false;
+        }
+        RestoreSprites();
     }
 }
 
@@ -1742,6 +2745,11 @@ const std::unordered_map<Mtx*, MtxF>& port_xr_eye_replacements(const std::unorde
         countdown = room ? kRoomCheckPresents : kStereoCheckPresents;
     }
 
+    if (eye == 0) {
+        gHud.planeValid = false;
+        gHud.partyValid = false;
+    }
+    RestoreSprites(); // this eye moves them from where the game put them
     std::lock_guard<std::mutex> lock(gCameraMutex);
     for (const auto& [key, cam] : gCameras) {
         Mtx* mtx = const_cast<Mtx*>(static_cast<const Mtx*>(key));
@@ -1753,10 +2761,19 @@ const std::unordered_map<Mtx*, MtxF>& port_xr_eye_replacements(const std::unorde
         } else {
             DecodeMtx(mtx, source);
         }
+        if (room && eye == 0 && key == gHud.camMtx) {
+            gHud.planeValid = HudPlaneFromCamera(source, cam);
+            gHud.partyValid = HudAnchoredLayer(cam, gHud.anchors[PORT_XR_HUD_PARTY], &gHud.party);
+        }
         MtxF shifted;
         if (room) {
             if (RoomEyeMatrix(source, cam, eye, shifted.mf)) {
                 gXr.eyeReplacements[mtx] = shifted;
+                for (const WorldSprite& sprite : gHud.sprites) {
+                    if (sprite.mtx == key) {
+                        ShiftSprite(sprite, source, shifted.mf, cam);
+                    }
+                }
                 if (check) {
                     RoomCheck(source, cam);
                 }

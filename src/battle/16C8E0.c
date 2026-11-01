@@ -1,4 +1,5 @@
 #include "common.h"
+#include "port/xr/quest_xr.h"
 #include "nu/nusys.h"
 #include "hud_element.h"
 #include "battle/battle.h"
@@ -448,6 +449,20 @@ void btl_draw_ui(void) {
     btl_update_starpoints_display();
     btl_draw_enemy_health_bars();
 
+    // Quest room view: the battle menus are drawn into the party layer, a
+    // projector screen standing at the stage's front left, left of the party:
+    // the screen's left edge, at the height of the bottom of the menu wheel's
+    // reel, sits on the floor at that point of the battle world
+    // (port_xr_note_hud_anchor); the status bar stays on the panel.
+    Gfx* xrMenus = gMainGfxPos;
+    gDPNoOp(gMainGfxPos++);
+    {
+        const f32 stageFrontLeft[3] = { -260.0f, 0.0f, 60.0f };
+
+        port_xr_note_hud_anchor(gDisplayContext->mainGfx, PORT_XR_HUD_PARTY, stageFrontLeft,
+                                OTRGetRectDimensionFromLeftEdge(0), 228);
+    }
+
     if (!changed) {
         switch (state) {
             case BATTLE_STATE_START:
@@ -549,6 +564,8 @@ void btl_draw_ui(void) {
         }
     }
     btl_popup_messages_draw_ui();
+    gDPNoOp(gMainGfxPos++);
+    port_xr_note_hud(gDisplayContext->mainGfx, xrMenus, gMainGfxPos - 1, PORT_XR_HUD_PARTY);
     draw_status_ui();
 }
 

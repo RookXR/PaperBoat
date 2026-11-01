@@ -4,6 +4,7 @@
 #include "ld_addrs.h"
 #include "port/Engine.h"
 #include "port/patches/Patches.h"
+#include "port/xr/quest_xr.h"
 
 #define MAX_HUD_CACHE_ENTRIES 192
 
@@ -226,8 +227,31 @@ void hud_element_load_script(HudElement* hudElement, HudScript* anim) {
     }
 }
 
+static void hud_element_draw_rect_impl(HudElement* hudElement, s16 texSizeX, s16 texSizeY, s16 drawSizeX,
+                                       s16 drawSizeY, s16 offsetX, s16 offsetY, s32 clamp, s32 dropShadow);
+
+// Quest room view: an element anchored to a world point (port_xr_anchor_hud_element,
+// e.g. the battle target pointer) is bracketed so the XR layer can draw it in the
+// scene at that point, moved per eye, instead of on the HUD panel.
 void hud_element_draw_rect(HudElement* hudElement, s16 texSizeX, s16 texSizeY, s16 drawSizeX, s16 drawSizeY,
                            s16 offsetX, s16 offsetY, s32 clamp, s32 dropShadow) {
+    s32 xrCamID = port_xr_hud_element_camera(hudElement);
+    Gfx* xrBegin = gMainGfxPos;
+
+    if (xrCamID >= 0) {
+        gDPNoOp(gMainGfxPos++);
+    }
+    hud_element_draw_rect_impl(hudElement, texSizeX, texSizeY, drawSizeX, drawSizeY, offsetX, offsetY, clamp,
+                               dropShadow);
+    if (xrCamID >= 0) {
+        gDPNoOp(gMainGfxPos++);
+        port_xr_note_world_sprite(gDisplayContext->mainGfx, xrBegin, gMainGfxPos - 1, hudElement,
+                                  &gDisplayContext->camPerspMatrix[xrCamID]);
+    }
+}
+
+static void hud_element_draw_rect_impl(HudElement* hudElement, s16 texSizeX, s16 texSizeY, s16 drawSizeX,
+                                       s16 drawSizeY, s16 offsetX, s16 offsetY, s32 clamp, s32 dropShadow) {
     u32 isFmtCI4;
     u32 isFmtIA8;
     s32 flipX, flipY;

@@ -51,6 +51,43 @@ int port_xr_background_cutout(const void* list, int candidate);
  * if that list was built without its backdrop. */
 void port_xr_frame_background(const void* list);
 
+/* UI in the room view. While the game thread builds a frame's main display
+ * list (main_loop.c gfx_draw_frame), screen-space UI passes are bracketed by
+ * two placeholder no-op commands: port_xr_hud_frame_start(list, camMtx)
+ * first (drops that list's brackets from its previous frame; `camMtx` is the
+ * frame camera's projection-slot matrix, the one noted with
+ * port_xr_note_camera, which the UI is laid out against), then one
+ * port_xr_note_hud(list, begin, end, kind) per bracket pair, `begin` and
+ * `end` being the two no-ops. For room-view pairs the XR layer turns them
+ * into a switch to one of its UI framebuffers and back; otherwise they stay
+ * no-ops. Kinds: */
+#define PORT_XR_HUD_PANEL 0 /* fixed UI: a steady panel above the scene */
+#define PORT_XR_HUD_PLANE 1 /* messages: the game camera's picture plane, over the speaker */
+#define PORT_XR_HUD_PARTY 2 /* battle menus: at the stage's front left (needs an anchor) */
+void port_xr_hud_frame_start(const void* list, const void* camMtx);
+void port_xr_note_hud(const void* list, void* begin, void* end, int kind);
+/* Places a layer by a world point: `world` (frame camera's world space) and
+ * where the game shows it on screen (native px); the layer keeps its screen
+ * layout around that point at a constant scale. Needed for PORT_XR_HUD_PARTY. */
+void port_xr_note_hud_anchor(const void* list, int kind, const float world[3], int screenX, int screenY);
+
+/* World-anchored UI elements (the battle target hand). The game places them
+ * on screen from a world point through a camera (get_screen_coords); in the
+ * room view the XR layer draws them in the scene instead, moved per eye to
+ * where that eye sees the point. port_xr_anchor_hud_element(elem, camID, x,
+ * y, z, screenX, screenY) records the point, the camera and the screen
+ * position the game derived from it (game thread; it holds until two frames
+ * pass without a new call). port_xr_hud_element_camera(elem) is the anchored
+ * camera id, or -1: the element's draw is then bracketed by two no-ops and
+ * reported with port_xr_note_world_sprite (`mtx`: that camera's
+ * projection-slot matrix in the display context being built). */
+void port_xr_anchor_hud_element(const void* elem, int camID, float x, float y, float z, int screenX, int screenY);
+int port_xr_hud_element_camera(const void* elem);
+void port_xr_note_world_sprite(const void* list, void* begin, void* end, const void* elem, const void* mtx);
+
+/* Called on the render thread before a frame is drawn, with its main list. */
+void port_xr_frame_main(const void* list);
+
 #else
 
 static inline void port_xr_note_camera(const void* mtx, const float eye[3], const float at[3],
@@ -71,7 +108,50 @@ static inline int port_xr_background_cutout(const void* list, int candidate) {
     return 0;
 }
 static inline void port_xr_frame_background(const void* list) { (void) list; }
-
+static inline void port_xr_hud_frame_start(const void* list, const void* camMtx) {
+    (void) list;
+    (void) camMtx;
+}
+#define PORT_XR_HUD_PANEL 0
+#define PORT_XR_HUD_PLANE 1
+#define PORT_XR_HUD_PARTY 2
+static inline void port_xr_note_hud_anchor(const void* list, int kind, const float world[3], int screenX,
+                                           int screenY) {
+    (void) list;
+    (void) kind;
+    (void) world;
+    (void) screenX;
+    (void) screenY;
+}
+static inline void port_xr_note_hud(const void* list, void* begin, void* end, int kind) {
+    (void) list;
+    (void) begin;
+    (void) end;
+    (void) kind;
+}
+static inline void port_xr_anchor_hud_element(const void* elem, int camID, float x, float y, float z, int screenX,
+                                              int screenY) {
+    (void) elem;
+    (void) camID;
+    (void) x;
+    (void) y;
+    (void) z;
+    (void) screenX;
+    (void) screenY;
+}
+static inline int port_xr_hud_element_camera(const void* elem) {
+    (void) elem;
+    return -1;
+}
+static inline void port_xr_note_world_sprite(const void* list, void* begin, void* end, const void* elem,
+                                             const void* mtx) {
+    (void) list;
+    (void) begin;
+    (void) end;
+    (void) elem;
+    (void) mtx;
+}
+static inline void port_xr_frame_main(const void* list) { (void) list; }
 #endif
 
 #ifdef __cplusplus

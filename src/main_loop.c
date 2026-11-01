@@ -9,6 +9,7 @@
 #include "audio/public.h"
 #include "dx/profiling.h"
 #include "port/interpolation/FrameInterpolation.h"
+#include "port/xr/quest_xr.h"
 
 s32 gOverrideFlags;
 s32 gTimeFreezeMode;
@@ -194,6 +195,23 @@ void gfx_task_background(void) {
                    NU_GFX_UCODE_F3DEX2, NU_SC_NOSWAPBUFFER);
 }
 
+// Quest room view: brackets a run of screen-space UI with two placeholder
+// no-ops that the XR layer may turn into a switch to one of its UI
+// framebuffers and back (port_xr_note_hud). PORT_XR_HUD_PANEL: fixed UI
+// (status bar, field menus), shown on a steady panel above the scene;
+// PORT_XR_HUD_PARTY: battle menus (btl_draw_ui, windows in battle), a
+// projector screen at the stage's front left; PORT_XR_HUD_PLANE: messages (speech bubbles), shown on the game
+// camera's picture plane so they sit over the speaker. Ranges may nest
+// (the inner one returns to the outer one's layer). Left in the eye images: the
+// interact prompts and UI effects (3D, drawn at world positions, e.g. damage
+// numbers), screen overlays (fades, wipes) and curtains.
+#define XR_HUD_BEGIN(name)     \
+    Gfx* name = gMainGfxPos; \
+    gDPNoOp(gMainGfxPos++)
+#define XR_HUD_END(name, kind) \
+    gDPNoOp(gMainGfxPos++);  \
+    port_xr_note_hud(gDisplayContext->mainGfx, name, gMainGfxPos - 1, kind)
+
 void gfx_draw_frame(void) {
     profiler_gfx_started();
 
@@ -206,6 +224,8 @@ void gfx_draw_frame(void) {
     }
 
     free_expired_animator_buffers();
+    // The UI is laid out against the current camera (field: CAM_DEFAULT, battle: CAM_BATTLE).
+    port_xr_hud_frame_start(gDisplayContext->mainGfx, &gDisplayContext->camPerspMatrix[gCurrentCameraID]);
 
     gDPSetColorImage(gMainGfxPos++, G_IM_FMT_RGBA, G_IM_SIZ_16b, SCREEN_WIDTH, GFX_COLOR_IMAGE_SENTINEL);
     gDPSetDepthImage(gMainGfxPos++, GFX_DEPTH_IMAGE_SENTINEL);
@@ -232,15 +252,22 @@ void gfx_draw_frame(void) {
     GFX_PROFILER_SWITCH(PROFILER_TIME_SUB_GFX_HUD_ELEMENTS, PROFILER_TIME_SUB_GFX_BACK_UI);
     FrameInterpolation_RecordOpenChild("gfx_back_ui", 0);
     render_screen_overlay_backUI();
+    XR_HUD_BEGIN(xrHudBack);
     render_workers_backUI();
     render_hud_elements_backUI();
+    XR_HUD_END(xrHudBack, PORT_XR_HUD_PANEL);
     render_effects_UI();
+    XR_HUD_BEGIN(xrHudMenus);
     render_game_mode_backUI();
     FrameInterpolation_RecordCloseChild();
 
     FrameInterpolation_RecordOpenChild("gfx_window_root", 0);
     if (!(gOverrideFlags & GLOBAL_OVERRIDES_WINDOWS_OVER_CURTAINS)) {
+        // In battle the windows are the menus' lists and descriptions: by the party.
+        XR_HUD_BEGIN(xrHudWindows);
         render_window_root();
+        XR_HUD_END(xrHudWindows,
+                   gGameStatusPtr->context == CONTEXT_BATTLE ? PORT_XR_HUD_PARTY : PORT_XR_HUD_PANEL);
     }
     FrameInterpolation_RecordCloseChild();
 
@@ -250,28 +277,35 @@ void gfx_draw_frame(void) {
     if (!(gOverrideFlags & GLOBAL_OVERRIDES_DISABLE_RENDER_WORLD) && gGameStatusPtr->debugScripts == DEBUG_SCRIPTS_NONE) {
         render_frame(true);
     }
+    XR_HUD_END(xrHudMenus, PORT_XR_HUD_PANEL);
     FrameInterpolation_RecordCloseChild();
 
     FrameInterpolation_RecordOpenChild("gfx_messages_mid", 0);
+    XR_HUD_BEGIN(xrHudMessagesMid);
     if (!(gOverrideFlags & GLOBAL_OVERRIDES_MESSAGES_OVER_CURTAINS)
         && !(gOverrideFlags & GLOBAL_OVERRIDES_MESSAGES_OVER_FRONTUI)
     ) {
         render_messages();
     }
+    XR_HUD_END(xrHudMessagesMid, PORT_XR_HUD_PLANE);
     FrameInterpolation_RecordCloseChild();
 
     FrameInterpolation_RecordOpenChild("gfx_front_ui", 0);
+    XR_HUD_BEGIN(xrHudFront);
     render_workers_frontUI();
     render_hud_elements_frontUI();
+    XR_HUD_END(xrHudFront, PORT_XR_HUD_PANEL);
     render_screen_overlay_frontUI();
     FrameInterpolation_RecordCloseChild();
 
     FrameInterpolation_RecordOpenChild("gfx_messages_front", 0);
+    XR_HUD_BEGIN(xrHudMessagesFront);
     if (!(gOverrideFlags & GLOBAL_OVERRIDES_MESSAGES_OVER_CURTAINS)
         && (gOverrideFlags & GLOBAL_OVERRIDES_MESSAGES_OVER_FRONTUI)
     ) {
         render_messages();
     }
+    XR_HUD_END(xrHudMessagesFront, PORT_XR_HUD_PLANE);
     FrameInterpolation_RecordCloseChild();
 
     FrameInterpolation_RecordOpenChild("gfx_curtains", 0);
@@ -279,12 +313,15 @@ void gfx_draw_frame(void) {
     FrameInterpolation_RecordCloseChild();
 
     FrameInterpolation_RecordOpenChild("gfx_messages_over_curtains", 0);
+    XR_HUD_BEGIN(xrHudMessagesOver);
     if (gOverrideFlags & GLOBAL_OVERRIDES_MESSAGES_OVER_CURTAINS) {
         render_messages();
     }
+    XR_HUD_END(xrHudMessagesOver, PORT_XR_HUD_PLANE);
     FrameInterpolation_RecordCloseChild();
 
     FrameInterpolation_RecordOpenChild("gfx_window_over_curtains", 0);
+    XR_HUD_BEGIN(xrHudOverCurtains);
     if (gOverrideFlags & GLOBAL_OVERRIDES_WINDOWS_OVER_CURTAINS) {
         render_window_root();
     }
@@ -292,6 +329,7 @@ void gfx_draw_frame(void) {
 
     FrameInterpolation_RecordOpenChild("gfx_game_mode_front_ui", 0);
     render_game_mode_frontUI();
+    XR_HUD_END(xrHudOverCurtains, PORT_XR_HUD_PANEL);
     FrameInterpolation_RecordCloseChild();
 
     if (gOverrideFlags & GLOBAL_OVERRIDES_SOFT_RESET) {

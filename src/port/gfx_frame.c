@@ -86,6 +86,7 @@ void Graphics_DrawFrame(Gfx* backgroundList, Gfx* mainList, s32 capturePrevFrame
     gSPEndDisplayList(g++);
 
     port_xr_frame_background(backgroundList);
+    port_xr_frame_main(mainList);
     GameEngine_ProcessGfxCommands(sMasterList);
 }
 
