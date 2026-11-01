@@ -101,3 +101,30 @@ scale), not by decoding the matrix's view: Paper Mario passes eye/at with each
 camera note anyway. The per-eye matrix is built in double from the images of the
 origin and unit axes (the map is affine), keeping the game's depth mapping, and
 the eye fov is widened across so pixels stay square (screen-space sprites/HUD).
+
+### 2026-11-01 — UI in the scene, not on the wrist
+
+A BattleShip-style panel over the left wrist was built first (whole UI layer on
+one quad at the left controller's aim pose). The owner tried it and asked to revert:
+UI belongs in the scene, roughly where it applies (bubbles over the speaker).
+**Why:** Paper Mario's UI is large and contextual (dialogue, battle menus,
+target pointer), unlike SSB64's few counters.
+
+### 2026-11-01 — Split the UI by what it belongs to
+
+A single picture plane (the whole UI on the game camera's image plane through its
+look-at point) put bubbles and the hand roughly right, but zoomed with the battle
+camera and put everything at one depth. Now: fixed UI on a steady panel (no zoom),
+battle menus on a constant-scale screen anchored to the stage, messages on the
+picture plane, the target hand per eye at its enemy's depth, 3D UI (damage numbers,
+prompts) left in the scene. **Why:** owner feedback on each step; placement values
+(panel 15 cm above / 40 cm behind; menu anchor and offsets) tuned with the owner on
+device.
+
+### 2026-11-01 — Battle menus as a projector screen at the stage's front left
+
+Anchored at a fixed battle-world point (-260, 0, 60) rather than at Mario: anchored
+at Mario it overlapped him and, facing the LOCAL origin, sat at a diagonal. It
+faces room +z, has twice the panel's scale (`gXrHudPartyWidth` 1.28), and moves
+with the stage when the battle camera pans. **Why:** owner: "it seems like it's
+supposed to be like a projector … attached to the front left of the stage".

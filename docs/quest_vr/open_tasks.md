@@ -29,15 +29,27 @@ table in `README.md`.
       `Room check` log. Placement CVars `gXrRoomDistance` / `gXrRoomHeight` /
       `gXrRoomUnitsPerMeter`.
 
+## Done — Phase 3h UI in the room view (2026-11-01)
+
+- [x] UI drawn into its own Fast3D framebuffers (brackets in `gfx_draw_frame`,
+      `G_SETFB`/`G_RESETFB`), three layers: steady panel (status bar), battle-menu
+      projector screen at the stage's front left, speech bubbles on the picture plane.
+- [x] Target hand moved and scaled per eye onto its enemy (world sprite).
+- [x] Damage numbers and prompts left in the scene (3D at world positions).
+- [x] Battle menu option text (scissor fix: framebuffers kept non-inverted).
+
 ## Next up — room view polish (owner chose "both, switchable", 2026-11-01)
 
-- [ ] **HUD on its own panel** (design notes: `xr_layer.md` → "Next: HUD panel";
-      ask the owner where it should go first). In the room view the HUD (HP/FP/coins, battle menus)
-      is screen-space texrects in each eye's image: head-locked, at the edge of a
-      widened field of view, unreadable (owner). Needs the HUD separated from the
-      scene: BattleShip Phase 6 drew its HUD into its own Fast3D framebuffer
-      (decomp brackets + `G_SETFB`) and showed it on a quad. In PaperBoat the HUD is
-      drawn after `render_frame(false)` in `gfx_draw_frame` (`main_loop.c`).
+- [ ] **End-of-battle star-point banner** (owner chose option 1, 2026-11-01): the
+      "N Star Points" banner is 3D virtual entities (`EVS_ShowStarpoints`,
+      `level_up.c`) sliding from x -278 through the middle and out right; with no TV
+      frame the room view shows the whole trip. Hide them in the room view while
+      outside what the game camera shows.
+- [ ] Enemy HP bars and other `get_screen_coords` UI (status icons, msg_api,
+      encounter) land on the steady panel at game-screen positions; make them world
+      sprites like the target hand when they matter.
+- [ ] Speech bubbles on the picture plane are only exact at the look-at depth, and
+      the plane follows the battle camera's zoom. Owner: good enough so far.
 - [ ] **Fixed "dollhouse" camera per map** as a toggle (owner's choice "both"):
       camera fixed on the map's bounds so the area stands still on the table and
       Mario walks inside it; fallback to follow for maps that don't fit.
@@ -79,7 +91,8 @@ table in `README.md`.
       (interpolation) for smoother motion; pacing already handles 120/60.
 - [ ] Passthrough around the screen, then the diorama cut-out (BattleShip 3p).
 - [ ] Head-tracked window / room view so levels float in the room (BattleShip 3c–3e).
-- [ ] Interaction: place/scale the level, HUD on the hand (BattleShip 4–7).
+- [ ] Interaction: place/scale the level (BattleShip 4–5). (HUD on the hand was
+      tried 2026-11-01 and dropped, see `decisions.md`.)
 - [ ] Engine menu (ImGui) access in VR: it was opened by a touch button on phones.
 
 ## Housekeeping

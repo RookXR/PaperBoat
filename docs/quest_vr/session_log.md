@@ -87,3 +87,32 @@ camera toggle (`open_tasks.md`). Added `xr_layer.md` (code map, CVars, HUD desig
 notes) for the next session. Pushing was pending the owner's go-ahead at the end
 of this session: check `git log rookxr/quest-xr..HEAD` (PaperBoat) and
 `git -C external/libultraship log origin/quest-xr..HEAD` before starting.
+
+---
+
+## 2026-11-01 — Phase 3h: UI in the room view
+
+**Done**
+- Wrist panel (BattleShip Phase 6 style): built, tried, reverted at the owner's
+  request (UI should be in the scene, near what it applies to).
+- Picture plane: whole UI on the game camera's picture plane. Owner: bubbles over
+  the speaker, hand roughly on enemies, but the top bar cut off (4:3 crop of a
+  widescreen status bar), zoom with the battle camera, depth mismatch, damage
+  numbers misplaced (they were 3D effects pulled into the UI layer).
+- Split (see `xr_layer.md` → "UI in the room view"): steady panel for the status
+  bar, battle-menu projector screen at the stage's front left, speech bubbles on the
+  picture plane, target hand per eye at its enemy (moved and scaled), damage numbers
+  and prompts back in the scene. Full 16:9 width.
+- Fixed missing battle-menu option text (Fast3D off-screen scissor vs `invertY`) and
+  an all-UI-invisible bug from the third layer's uninitialized framebuffer id.
+- Placement tuned with the owner on device: panel 15 cm above / 40 cm behind the
+  anchor; battle menu at stage point (-260, 0, 60), width 1.28 m, offsets
+  +0.15 m right, -0.03 m up. Owner: "looks perfect"; hand size "perfect".
+
+**State at end of session**
+- Committed and pushed to `rookxr/quest-xr` (libultraship unchanged).
+- Installed APK = this build.
+
+**Next:** hide the end-of-battle star-point banner while it's outside the game
+camera's view (owner chose this, in progress); then enemy HP bars as world sprites
+if wanted; then the dollhouse camera (`open_tasks.md`).

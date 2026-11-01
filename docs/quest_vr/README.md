@@ -14,7 +14,7 @@ APK → immersive OpenXR screen with Touch input → stereo → passthrough / di
 3. [`build_and_deploy.md`](build_and_deploy.md) has the build/install/log
    commands and the device gotchas.
 4. [`xr_layer.md`](xr_layer.md): code map of the VR code, frame flow, CVars,
-   log lines, and design notes for the next task (HUD panel).
+   log lines, and how the UI is placed in the room view.
 5. Reference implementation: BattleShip's `docs/quest_vr_port.md` (phase-by-phase
    write-up, ~125 KB; read it in chunks) and `port/xr/quest_xr.cpp`.
 
@@ -28,7 +28,8 @@ APK → immersive OpenXR screen with Touch input → stereo → passthrough / di
 | 3b | Stereo polish: 2D map backgrounds at infinity, CPU-projected sprites, projection-load inventory | Backgrounds: superseded by 3p (no backdrop in cut-out scenes). Rest not started. |
 | 3p | Passthrough + diorama cut-out | **Done, verified on device 2026-11-01.** Room around the screen (`gXrPassthrough`); field and battle scenes draw no backdrop and float over the room (`gXrDiorama`). Menus, pause, title opaque. Needs libultraship `LUS_GL_GAME_FB_ALPHA`. |
 | 3e | Room view: the scene as an object in the room | **Follow-camera version done, verified on device 2026-11-01** (`gXrRoomView`): per-eye matrices from the tracked head pose, projection layer, world level and at 300 units/m, camera look-at 1.0 m ahead / 0.35 m below eye level. Owner: "pretty good", walked up to it, played a battle. HUD still head-locked and unreadable. Fixed "dollhouse" camera per map: next, as a toggle. |
-| 4+ | HUD panel, dollhouse camera, interaction | Not started. |
+| 3h | UI in the room view (HUD) | **Done, verified on device 2026-11-01.** UI drawn into its own Fast3D framebuffers and shown as layers in the room: status bar on a steady panel above the stage, battle menus as a "projector screen" at the stage's front left, speech bubbles on the game camera's picture plane, battle target hand moved and scaled per eye onto its enemy; damage numbers and prompts stay 3D in the scene. Owner: menu placement "perfect", hand size "perfect". A wrist panel was tried first and dropped. |
+| 4+ | Dollhouse camera, interaction | Not started. |
 
 ## Repos and branches
 

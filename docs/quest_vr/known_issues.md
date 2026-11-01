@@ -47,6 +47,12 @@ also removes the extracted `pm64.o2r`). Harmless.
 - **Plain `char` is unsigned on Android arm64** (signed on x86, wasm and Apple
   arm64). Not shown to matter; `-fsigned-char` was tried and reverted.
 
+- **Enemy HP bars in battle sit on the steady UI panel** at their game-screen
+  positions, not over the enemies (`btl_draw_enemy_health_bars` uses
+  `get_screen_coords`). Not reported by the owner yet.
+- **End-of-battle star-point banner slides through the room** (3D entities that
+  the TV frame normally hides). Being fixed (open_tasks).
+
 ## Resolved
 
 ### 2026-10-25 — Garbled textures on Android (map palettes, sprites)
@@ -67,3 +73,22 @@ String literals (static memory, untagged) worked.
 app's logs folder (showed CPU-side data was already wrong), then traced
 `GfxDpLoadTlut` (showed palette loads carrying the raster's resource), then traced
 the OTR filepath handler (showed `_tlut` commands never reached it).
+
+### 2026-11-01 — Battle menu option names missing in the room view
+**Symptom:** with the UI in its own framebuffer, battle menu lists showed their
+descriptions but not the option names (still selectable).
+**Root cause:** Fast3D creates off-screen framebuffers with `invertY` on (geometry
+rendered upside down), but `AdjustVIewportOrScissor` computes an active
+framebuffer's scissor with the non-inverted formula (`orig_height - y`), so every
+scissor landed mirrored vertically. The lists draw their text inside tight
+scissors (`OTRGetScissorCoordX`), so it was clipped away.
+**Fix:** `KeepHudUpright` sets the UI framebuffers to non-inverted every pair (same
+size → only a rebind); the copy needs no flip any more. Upstream libultraship has
+the same mismatch for any game that scissors inside a `G_SETFB` framebuffer.
+
+### 2026-11-01 — All UI invisible after adding the third layer
+**Root cause:** `int fb[kHudKinds] = { -1, -1 }` with `kHudKinds` 3 left the third id
+0; the "already created" check looked at the last slot, so no framebuffer was ever
+created and the UI drew into invalid ids. **Fix:** all slots -1, check all of them.
+Found with the `UI coverage` diagnostic.
+

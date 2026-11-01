@@ -1,17 +1,21 @@
 # The XR layer: code map, CVars, design notes
 
 How the Quest build's VR code fits together as of 2026-11-01 (Phases 2, 3a, 3p,
-3e follow camera). Read this before changing `src/port/xr/quest_xr.cpp`.
+3e follow camera, 3h UI in the room view). Read this before changing `src/port/xr/quest_xr.cpp`.
 
 ## Code map
 
 | Where | What |
 |-------|------|
-| `src/port/xr/quest_xr.cpp` | Everything XR: OpenXR instance/session/swapchain, Touch → virtual SDL pad, frame pacing, stereo, passthrough, cut-out presentation, room view. Only compiled with `PAPERBOAT_QUEST_XR`. Section order: setup → input → GL state helpers (`BlitState`, `DrawState`) → game texture copy (`CopyGameEye`) → `CopyGameFrame` → passthrough → `EndFrame` / `SubmitFrame` → stereo camera (`ShiftForEye`, `StereoCheck`) → room view (`RoomFov`, `SampleRoomViews`, `RoomClip`, `RoomEyeMatrix`, `RoomCheck`, `BeginStereoPair`) → `extern "C"` API → `__wrap_SDL_GL_SwapWindow`. |
+| `src/port/xr/quest_xr.cpp` | Everything XR: OpenXR instance/session/swapchain, Touch → virtual SDL pad, frame pacing, stereo, passthrough, cut-out presentation, room view. Only compiled with `PAPERBOAT_QUEST_XR`. Section order: setup → input → GL state helpers (`BlitState`, `DrawState`) → game texture copy (`CopyGameEye`) → `CopyGameFrame` → passthrough → `EndFrame` / `SubmitFrame` → stereo camera (`ShiftForEye`, `StereoCheck`) → room view (`RoomFov`, `SampleRoomViews`, `WorldToRoom`, `RoomClip`, `RoomEyeMatrix`, `RoomCheck`) → UI in the room view (`PatchHud`, `ShiftSprite`, `CopyHudImage`, `HudPanelPose`, `HudAnchoredLayer`, `HudPlaneFromCamera`) → `BeginStereoPair` → `extern "C"` API → `__wrap_SDL_GL_SwapWindow`. |
 | `src/port/xr/quest_xr.h` | The C API the game and engine call, with no-op inline stubs for non-Quest builds (callers need no `#ifdef`). |
 | `src/cam_main.c` | `port_xr_note_camera(mtx, eye, at, vpScale, vpTrans)` for every perspective camera matrix it writes (the projection-slot matrix is view×persp). |
 | `src/background_gfx.c` | `gfx_draw_background`: `port_xr_background_cutout(list, 0)` at the top (frame opaque by default), `(list, 1)` in the default case right after the depth clear; if it returns 1 the backdrop, letterbox and margins are skipped. |
 | `src/port/gfx_frame.c` | `Graphics_DrawFrame` (render thread) calls `port_xr_frame_background(backgroundList)` before drawing, so the XR layer knows whether this frame is a cut-out. |
+| `src/main_loop.c` | `gfx_draw_frame`: `port_xr_hud_frame_start(list, frame camera matrix)`, then `XR_HUD_BEGIN/END` no-op brackets around the UI passes with a layer kind (`port_xr_note_hud`). |
+| `src/battle/16C8E0.c` | `btl_draw_ui`: battle menus bracketed as `PORT_XR_HUD_PARTY`, anchored at a fixed stage point (`port_xr_note_hud_anchor`); the status bar stays outside (panel). |
+| `src/hud_element.c` | `hud_element_draw_rect` wrapper: an element with a world anchor (`port_xr_hud_element_camera`) is bracketed and reported as a world sprite (`port_xr_note_world_sprite`). |
+| `src/battle/states/select_target.c` | The target hand anchors its hud element to the target's world position (`port_xr_anchor_hud_element`). |
 | `src/port/Engine.cpp` | `GameEngine::RunCommands`: per interpolated present, eye loop `port_xr_set_eye(0/1)` + `DrawAndRunGraphicsCommands(…, port_xr_eye_replacements(…))`; `ProcessGfxCommands` hands the present rate to pacing. |
 | `CMakeLists.txt` | Quest block: OpenXR loader, `--wrap=SDL_GL_SwapWindow`, `LUS_GL_GAME_FB_ALPHA` on the `libultraship` target. |
 | `android/app/src/main/AndroidManifest.xml` | `com.oculus.feature.PASSTHROUGH` (required=false), supported devices. |
@@ -62,6 +66,15 @@ Facts that cost time:
 | `gXrRoomView` | 1 | room view for cut-out frames (0 = window screen) |
 | `gXrRoomDistance` / `gXrRoomHeight` | 1.0 / -0.35 m | camera look-at point ahead of / above the LOCAL origin (recenter: hold Meta) |
 | `gXrRoomUnitsPerMeter` | 300 | model scale (Mario ≈ 12 cm) |
+| `gXrHud` | 1 | UI on its own layers in the room view (0 = in the eye images, head-locked) |
+| `gXrHudPanelWidth` / `Up` / `Back` | 0.9 / 0.15 / 0.4 m | steady panel (status bar, field menus): width of the 16:9 screen; center above / behind the room anchor |
+| `gXrHudPartyWidth` | 1.28 m | battle-menu layer: width the 16:9 screen has on it |
+| `gXrHudPartyRight` / `Up` / `Back` | 0.15 / -0.03 / 0 m | battle-menu layer: offset from its stage anchor (tuned with the owner) |
+| `gXrHudPartyTilt` | 0° | battle-menu layer: lean back from vertical |
+| `gXrHudScale` | 1 | picture plane (speech bubbles) shrunk about the look-at point; 1 = exact alignment |
+| `gXrHudSpriteScale` | 1 | world sprites (target hand): size multiplier on top of the game's size against the scene |
+| `gXrHudBacking` | 0 | debug: alpha of a black card behind every UI layer |
+| `gXrHudCoverage` | 0 | debug: log each UI layer's coverage every ~5 s (GPU readback) |
 
 Edit the config with the game force-stopped (it's only read at launch). The owner
 hasn't changed any XR CVars from their defaults yet.
@@ -74,33 +87,51 @@ on/off`, `Room view on/off`, `Pacing: … presents/s` (5 s), `Stereo check:` (wi
 are the two display contexts). Healthy room check on 2026-11-01: NDC error ~1e-7,
 `viewport 0,20-320,220`, `L eye fov x -2.40..1.86 y -1.43..0.97 (tan)`.
 
-## Next: HUD panel — design notes
+UI: `HUD framebuffer N for the panel|plane|party layer (1920x1080 for 320x240)`
+(once; three of them), `HUD swapchain 1280x2160`, `UI on its layers (n range(s))` /
+`UI in the eye images`, `HUD plane: center … size … viewport …` (~10 s),
+`World sprite: anchor … game screen x,y -> eye x,y, scale f` (~10 s while the target
+hand shows), `UI coverage | panel …% cols … rows …` (with `gXrHudCoverage`).
+Set `adb logcat -G 16M` first: the default buffer lost most of a session.
 
-Problem: in the room view all screen-space UI (HP/FP/coins, battle command menus,
-message boxes, popups) is drawn into each eye's image at the same spot: head-locked,
-at the edge of the widened fov, unreadable.
+## UI in the room view (Phase 3h)
 
-What is known so far (nothing built yet):
-- `gfx_draw_frame` (`src/main_loop.c`) draws in passes, each wrapped in
-  `FrameInterpolation_RecordOpenChild`: `gfx_world` = `render_frame(false)` (the 3D
-  world), then `gfx_interact_prompts`, `gfx_back_ui` (screen overlays, workers,
-  hud elements, `render_effects_UI`, game mode back UI), `gfx_window_root`,
-  `gfx_world_hud` = `render_frame(true)`, `gfx_messages_mid`, then front UI. So,
-  unlike SSB64, most of the UI is in a few contiguous passes after the world —
-  candidate: bracket everything after `render_frame(false)` as one HUD range.
-  Check what `render_frame(true)` draws and whether some "UI" passes are
-  world-anchored (e.g. effects UI, interact prompts, damage numbers) and should
-  stay in the scene.
-- BattleShip Phase 6 (`../BattleShip/docs/quest_vr_port.md`, "Phase 6") did it
-  with **no libultraship change**: decomp emits `gDPNoOp` brackets around the HUD
-  and reports them (`port_xr_note_hud(begin, end)`); per room-view pair the XR
-  layer patches the brackets into Fast3D's `G_SETFB fb` / `G_RESETFB` so the HUD
-  draws into its own framebuffer (created with
-  `Interpreter::CreateFrameBuffer(320, 240, 320, 240, resize=1)`; `resize` on is
-  essential, see their 6b "Framebuffer fix"), cleared to (0,0,0,0) each eye pass,
-  copied into a HUD swapchain and shown on a quad (premultiplied alpha). Their
-  first placement was a test quad above the stage; final was the left hand.
-- Placement options to ask the owner about: floating panel near/above the scene,
-  fixed in front, or on the left hand like BattleShip. Battle menus are interactive
-  and large in Paper Mario, so a fixed readable panel may suit better than the wrist.
-- Window mode / menus (non-room frames) should keep the HUD in the image.
+Problem: in the room view the screen-space UI was drawn into each eye's image at
+the same spot: head-locked, at the edge of the widened fov, unreadable.
+
+**Routing.** `gfx_draw_frame` brackets UI passes with two `gDPNoOp`s each and
+reports them per main display list with a kind. For a room-view pair,
+`BeginStereoPair` → `PatchHud` rewrites the brackets into Fast3D's own `G_SETFB fb`
+/ `G_RESETFB` (no libultraship change); after the pair (`port_xr_set_eye(-1)`) they
+go back to no-ops. Ranges nest: an inner range's end switches back to the outer
+range's framebuffer. What goes where:
+
+| Pass (main_loop.c) | Kind | Shown as |
+|------|------|----------|
+| workers/hud elements back UI, game-mode back UI (field status bar, field menus), windows (field), CAM_HUD pass, front UI, game-mode front UI | `PORT_XR_HUD_PANEL` | steady panel above/behind the stage, facing the LOCAL origin (`HudPanelPose`) |
+| battle menus (`btl_draw_ui` minus status bar), windows during battle | `PORT_XR_HUD_PARTY` | constant-scale "projector screen" facing room +z; its screen point (left edge, y 228 = foot of the menu wheel) sits at stage point (-260, 0, 60) mapped into the room like the scene, plus the offsets (`HudAnchoredLayer`) |
+| `render_messages` (all three call sites) | `PORT_XR_HUD_PLANE` | the frame camera's picture plane: through its look-at point, facing it, spanning exactly what it shows there (`HudPlaneFromCamera`), so bubbles sit over the speaker |
+| interact prompts, `render_effects_UI` (damage numbers), screen overlays, curtains | none | stay in the eye images: the first two are 3D objects at world positions and get the room matrices; overlays/curtains cover the view |
+
+**Framebuffers.** Three Fast3D framebuffers, `CreateFrameBuffer(320, 240, 320, 240,
+resize=1)`: storage follows the game framebuffer (1920×1080) and the layout is the
+game screen's, full 16:9 width (this port stretches the status bar to the widescreen
+edges; a 4:3 crop cut off the coins). Kept non-inverted every pair
+(`KeepHudUpright`, see `known_issues.md`). Cleared to (0,0,0,0) before each eye
+(both eyes draw them). On the right eye's swap `CopyHudImage` copies them into
+thirds of one 1280×2160 swapchain; `EndFrame` adds one quad per layer after the
+projection layer (premultiplied alpha; quads always draw over the scene).
+
+**World sprites** (the battle target hand). `select_target.c` anchors the hand's hud
+element to the target's world position and the screen position the game derived;
+`hud_element_draw_rect` brackets the element's draw. Inside a redirected range the
+brackets become `G_RESETFB` / `G_SETFB` back, so the hand draws into the eye images.
+Per eye (`port_xr_eye_replacements`), its texture rectangles (as built, restored
+each eye) are moved to where that eye sees the anchor and scaled by eye-vs-game
+pixels per world unit at the anchor (`ShiftSprite`, `TransformSpriteRects`): it sits
+at the enemy's depth with the game's size against the scene.
+
+**Not handled yet:** enemy HP bars (`btl_draw_enemy_health_bars`, `get_screen_coords`
+→ hud elements on the panel at game-screen positions); other `get_screen_coords`
+users (status icons, msg_api, encounter); the end-of-battle star-point banner (3D
+virtual entities sliding in from off-stage, see `open_tasks.md`).
