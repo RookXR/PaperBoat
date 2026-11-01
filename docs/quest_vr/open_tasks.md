@@ -31,7 +31,8 @@ table in `README.md`.
 
 ## Next up — room view polish (owner chose "both, switchable", 2026-11-01)
 
-- [ ] **HUD on its own panel.** In the room view the HUD (HP/FP/coins, battle menus)
+- [ ] **HUD on its own panel** (design notes: `xr_layer.md` → "Next: HUD panel";
+      ask the owner where it should go first). In the room view the HUD (HP/FP/coins, battle menus)
       is screen-space texrects in each eye's image: head-locked, at the edge of a
       widened field of view, unreadable (owner). Needs the HUD separated from the
       scene: BattleShip Phase 6 drew its HUD into its own Fast3D framebuffer

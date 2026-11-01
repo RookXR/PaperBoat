@@ -13,7 +13,9 @@ APK → immersive OpenXR screen with Touch input → stereo → passthrough / di
    and [`known_issues.md`](known_issues.md) before debugging.
 3. [`build_and_deploy.md`](build_and_deploy.md) has the build/install/log
    commands and the device gotchas.
-4. Reference implementation: BattleShip's `docs/quest_vr_port.md` (phase-by-phase
+4. [`xr_layer.md`](xr_layer.md): code map of the VR code, frame flow, CVars,
+   log lines, and design notes for the next task (HUD panel).
+5. Reference implementation: BattleShip's `docs/quest_vr_port.md` (phase-by-phase
    write-up, ~125 KB; read it in chunks) and `port/xr/quest_xr.cpp`.
 
 ## Current status (update at the end of every session)
@@ -71,6 +73,7 @@ rewrite the affected commits and force-push (done once, 2026-10-25).
 |------|---------|
 | `README.md` | This index, status table, repo layout. |
 | `build_and_deploy.md` | Toolchain, build, install, ROM, logs, device gotchas. |
+| `xr_layer.md` | VR code map, frame flow, CVars, logs, next-task design notes. |
 | `decisions.md` | Decisions made and why (append-only). |
 | `known_issues.md` | Open problems and resolved bugs with root causes. |
 | `open_tasks.md` | Phase plan and the concrete next steps. |

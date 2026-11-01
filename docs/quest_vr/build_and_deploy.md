@@ -85,3 +85,21 @@ inspect. It only shows the game if the owner is looking at the panel.
   `adb install`; the `/c/...` form fails.
 - Foreground `sleep` loops are blocked by the harness; wait with
   `until <condition>; do sleep N; done` or `run_in_background`.
+- The session scratchpad folder may not exist yet: `mkdir -p` it before
+  redirecting a build log into it (a missing folder makes the build "fail" at once).
+- Multi-line Python or C passed through a bash heredoc can fail to parse
+  (quotes/apostrophes). Write the script to the scratchpad with the Write tool and
+  run it with `python -I <script> <repo>`.
+- Line endings are mixed: e.g. `src/cam_main.c` is CRLF, `src/port/xr/*` LF.
+  The Edit tool handles both; scripts must preserve each file's endings.
+
+## Device session routine
+
+1. Headset plugged in by USB (after a reboot): `adb tcpip 5555`, then
+   `adb connect <headset-ip>:5555` (the owner's IP is in the assistant's memory,
+   not in the repo). Owner accepts the prompt if asked.
+2. Build (background, ~2 min for port-only changes), then
+   `adb shell am force-stop dev.net64.paperboat.debug`, `install -r`,
+   `logcat -c`, `am start` (commands above).
+3. Ask the owner to put the headset on and load a save; read
+   `adb logcat -d -s paperboat.xr` for the checks in `xr_layer.md` → Logs.

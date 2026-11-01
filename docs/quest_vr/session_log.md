@@ -83,4 +83,7 @@ what was learned, where we stopped. Details belong in the other docs.
 - Installed APK on the headset = the room view build.
 
 **Next:** HUD on its own panel (unreadable, head-locked), then the dollhouse
-camera toggle (`open_tasks.md`).
+camera toggle (`open_tasks.md`). Added `xr_layer.md` (code map, CVars, HUD design
+notes) for the next session. Pushing was pending the owner's go-ahead at the end
+of this session: check `git log rookxr/quest-xr..HEAD` (PaperBoat) and
+`git -C external/libultraship log origin/quest-xr..HEAD` before starting.
