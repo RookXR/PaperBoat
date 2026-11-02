@@ -523,6 +523,30 @@ b32 screen_overlay_on_picture_plane(s32 layer) {
            && gGameStatusPtr->context != CONTEXT_PAUSE;
 }
 
+// Quest room view: how much of the screen the front overlay covers (0..1) when it
+// is a transition (fade, Mario/star wipe, battle swirl), else -1. The XR layer
+// then skips the overlay and fades the scene itself into the room by that much.
+f32 screen_overlay_front_transition(void) {
+    f32 coverage = screen_overlay_frontProgress / 255.0f;
+
+    if (!screen_overlay_on_picture_plane(SCREEN_LAYER_FRONT)) {
+        return -1.0f;
+    }
+    switch (screen_overlay_frontType) {
+        case OVERLAY_SCREEN_COLOR:
+        case OVERLAY_VIEWPORT_COLOR:
+        case OVERLAY_SCREEN_MARIO:
+        case OVERLAY_VIEWPORT_MARIO:
+        case OVERLAY_SCREEN_STAR:
+        case OVERLAY_VIEWPORT_STAR:
+        case OVERLAY_TYPE_9:
+        case OVERLAY_START_BATTLE:
+            return coverage < 0.0f ? 0.0f : coverage > 1.0f ? 1.0f : coverage;
+        default:
+            return -1.0f;
+    }
+}
+
 void render_screen_overlay_frontUI(void) {
     if (screen_overlay_frontType != OVERLAY_NONE
         && screen_overlay_frontProgress != OVERLAY_RENDER_OFF

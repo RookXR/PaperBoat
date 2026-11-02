@@ -9,11 +9,11 @@ master list, and both eyes draw the same list, so the right eye's
 right). Seen as double vision in the battle swirl (now skipped in the room view).
 `OVERLAY_BLUR` (Kammy Koopa, Mega Quake, `TRANSITION_SLOW_BLUR_MOTION`) still has it.
 
-### Fades cover only the game camera's frame (room view)
-Screen overlays are on the picture plane, so scene parts outside that frame stay
-visible during a fade and can pop when the next map loads; the panel/party layers
-aren't covered either. If no frame camera is noted (e.g. file select, all cameras
-disabled) the plane isn't shown and an overlay drawn then is invisible.
+### Non-transition overlays cover only the game camera's frame (room view)
+Transitions now fade the scene itself (resolved below). Spotlights, darkness
+stencils and back-layer dims are still on the picture plane: scene parts outside
+that frame aren't covered. If no frame camera is noted (e.g. file select, all
+cameras disabled) the plane isn't shown and such an overlay is invisible.
 
 ### World sprite boxes can overlap
 Each sprite quad shows its bounding box of the shared sprite framebuffer; if two
@@ -121,3 +121,8 @@ double. Now bracketed onto the panel / picture plane / party layer.
 Texrects in the eye images stay square to the image, so they rolled with head roll.
 HP bars were on the panel at game-screen positions ("random space on the stage").
 Both are now world-sprite quads (`xr_layer.md`).
+
+### 2026-11-01 — Fades showed a box with the scene visible around it
+Transitions on the picture plane covered only the game camera's frame, so the
+scene around the box stayed visible (owner: "a little jarring"). Front-layer
+transitions now skip the overlay and fade the scene image into the room.

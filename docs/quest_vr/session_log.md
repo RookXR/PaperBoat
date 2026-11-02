@@ -139,5 +139,10 @@ if wanted; then the dollhouse camera (`open_tasks.md`).
 - Committed on `quest-xr`, not pushed (libultraship unchanged).
 - Installed APK = this build.
 
+- Pushed the above, then: transitions (fades, wipes, battle swirl) now fade the
+  scene into the passthrough room instead of drawing a box on the picture plane
+  (`port_xr_note_scene_fade`, copy-shader `uOpacity`). Owner: "looks perfect and
+  is so much better"; UI staying up during fades is fine.
+
 **Next:** confirm the star-point banner; `OVERLAY_BLUR` per-eye; other
 `get_screen_coords` UI if it matters; then the dollhouse camera (`open_tasks.md`).

@@ -86,6 +86,10 @@ void port_xr_anchor_hud_element(const void* elem, int camID, float x, float y, f
  * bars) instead of turning toward the viewer. */
 void port_xr_anchor_stage_sprite(const void* elem, int camID, float x, float y, float z, int screenX, int screenY);
 int port_xr_hud_element_camera(const void* elem);
+/* A screen transition (fade, wipe) between two no-ops, covering `coverage`
+ * (0..1) of the screen: in the room view it is skipped and the scene fades
+ * into the room by that much instead. */
+void port_xr_note_scene_fade(const void* list, void* begin, void* end, float coverage);
 void port_xr_note_world_sprite(const void* list, void* begin, void* end, const void* elem, const void* mtx);
 
 /* Called on the render thread before a frame is drawn, with its main list. */
@@ -153,6 +157,12 @@ static inline void port_xr_anchor_stage_sprite(const void* elem, int camID, floa
 static inline int port_xr_hud_element_camera(const void* elem) {
     (void) elem;
     return -1;
+}
+static inline void port_xr_note_scene_fade(const void* list, void* begin, void* end, float coverage) {
+    (void) list;
+    (void) begin;
+    (void) end;
+    (void) coverage;
 }
 static inline void port_xr_note_world_sprite(const void* list, void* begin, void* end, const void* elem,
                                              const void* mtx) {

@@ -221,6 +221,10 @@ struct QuestXr {
     // Copy from the game framebuffer's texture, keeping its alpha (CopyGameEye).
     GLuint copyProgram = 0, copyVao = 0;
     GLint copyAlphaViewLoc = -1;
+    GLint copyOpacityLoc = -1;
+    // The scene image's opacity for the pair being drawn: below 1 during a
+    // screen transition in the room view (port_xr_note_scene_fade).
+    float sceneOpacity = 1.0f;
     GLuint loggedCopyTexture = 0;
 
     // Passthrough (XR_FB_passthrough): created once when first wanted, then
@@ -919,10 +923,11 @@ constexpr const char* kGameCopyFs = R"(#version 300 es
 precision highp float;
 uniform sampler2D uGame;
 uniform bool uAlphaView;
+uniform float uOpacity;
 in vec2 vPos;
 out vec4 oColor;
 void main() {
-    vec4 c = texture(uGame, vPos);
+    vec4 c = texture(uGame, vPos) * uOpacity; // premultiplied: fades into what's behind
     oColor = uAlphaView ? vec4(c.aaa, 1.0) : c;
 }
 )";
@@ -957,6 +962,7 @@ void CreateGameCopy() {
         if (ok) {
             gXr.copyProgram = program;
             gXr.copyAlphaViewLoc = glGetUniformLocation(program, "uAlphaView");
+            gXr.copyOpacityLoc = glGetUniformLocation(program, "uOpacity");
             GLint prevProgram = 0;
             glGetIntegerv(GL_CURRENT_PROGRAM, &prevProgram);
             glUseProgram(program);
@@ -1003,6 +1009,7 @@ void CopyGameEye(int srcW, int srcH, GLuint drawFbo, int dstX) {
     glViewport(dstX, 0, gXr.width, gXr.height);
     glUseProgram(gXr.copyProgram);
     glUniform1i(gXr.copyAlphaViewLoc, CVarGetInteger(kAlphaViewCVar, 0) != 0);
+    glUniform1f(gXr.copyOpacityLoc, gXr.sceneOpacity);
     glBindVertexArray(gXr.copyVao);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texture);
@@ -1823,6 +1830,13 @@ struct HudRange {
     int parent = -1; // kind of the range it sits in, -1 = none
 };
 
+// A screen transition's commands (port_xr_note_scene_fade).
+struct FadeRange {
+    Fast::F3DGfx* begin; // the two placeholder commands
+    Fast::F3DGfx* end;
+    float coverage; // 0..1 of the screen
+};
+
 // A layer's anchor (port_xr_note_hud_anchor).
 struct HudLayerAnchor {
     bool valid = false;
@@ -1844,6 +1858,7 @@ struct WorldSprite {
 struct Hud {
     std::vector<HudRange> ranges;     // of the frame being drawn (port_xr_frame_main)
     std::vector<WorldSprite> sprites; // ditto
+    std::vector<FadeRange> fades;     // ditto
     int fb[kHudKinds] = { -1, -1, -1, -1 }; // Fast3D framebuffer ids
     bool fbFailed = false;
     bool redirect = false; // the current pair draws the UI into fb
@@ -1884,6 +1899,7 @@ std::mutex gHudMutex;
 std::unordered_map<const void*, std::vector<HudRange>> gHudNotes;
 std::unordered_map<const void*, const void*> gHudCameras;
 std::unordered_map<const void*, std::vector<WorldSprite>> gSpriteNotes;
+std::unordered_map<const void*, std::vector<FadeRange>> gFadeNotes;
 std::unordered_map<const void*, HudAnchor> gHudAnchors;
 std::unordered_map<const void*, std::vector<std::pair<int, HudLayerAnchor>>> gLayerAnchorNotes;
 unsigned gHudBuild = 0; // frames built (port_xr_hud_frame_start)
@@ -1982,6 +1998,12 @@ void NoOp(Fast::F3DGfx* cmd) {
     cmd->words.w0 = cmd->words.w1 = 0; // G_NOOP
 }
 
+// Jumps to `to` in the same list (gSPBranchList: G_DL, no push).
+void BranchTo(Fast::F3DGfx* cmd, Fast::F3DGfx* to) {
+    cmd->words.w0 = ((uintptr_t) 0xDE << 24) | ((uintptr_t) 1 << 16);
+    cmd->words.w1 = (uintptr_t) to;
+}
+
 // The brackets become switches to the UI framebuffers and back (redirect),
 // or no-ops.
 void WriteHudBrackets(bool redirect) {
@@ -1997,6 +2019,15 @@ void WriteHudBrackets(bool redirect) {
             NoOp(range.begin);
             NoOp(range.end);
         }
+    }
+    // Screen transitions: skipped (the scene image fades instead, PatchHud).
+    for (const FadeRange& fade : gHud.fades) {
+        if (redirect) {
+            BranchTo(fade.begin, fade.end);
+        } else {
+            NoOp(fade.begin);
+        }
+        NoOp(fade.end);
     }
     for (const WorldSprite& sprite : gHud.sprites) {
         if (redirect) {
@@ -2157,6 +2188,16 @@ void PatchHud(bool room) {
         KeepHudUpright();
     }
     WriteHudBrackets(redirect);
+    float coverage = 0.0f;
+    for (const FadeRange& fade : gHud.fades) {
+        coverage = std::max(coverage, fade.coverage);
+    }
+    gXr.sceneOpacity = redirect ? 1.0f - std::clamp(coverage, 0.0f, 1.0f) : 1.0f;
+    static bool sLoggedFade = false;
+    if ((gXr.sceneOpacity < 1.0f) != sLoggedFade) {
+        sLoggedFade = gXr.sceneOpacity < 1.0f;
+        LOGI("Scene fade %s (opacity %.2f)", sLoggedFade ? "started" : "ended", gXr.sceneOpacity);
+    }
     if (redirect != gHud.loggedRedirect) {
         gHud.loggedRedirect = redirect;
         LOGI("UI %s (%zu range(s))", redirect ? "on its layers" : "in the eye images", gHud.ranges.size());
@@ -2752,6 +2793,7 @@ extern "C" void port_xr_hud_frame_start(const void* list, const void* camMtx) {
     std::lock_guard<std::mutex> lock(gHudMutex);
     gHudNotes[list].clear();
     gSpriteNotes[list].clear();
+    gFadeNotes[list].clear();
     gLayerAnchorNotes[list].clear();
     gHudCameras[list] = camMtx;
     ++gHudBuild;
@@ -2797,6 +2839,15 @@ extern "C" int port_xr_hud_element_camera(const void* elem) {
     return it != gHudAnchors.end() && gHudBuild - it->second.stamp <= 2 ? it->second.cam : -1;
 }
 
+extern "C" void port_xr_note_scene_fade(const void* list, void* begin, void* end, float coverage) {
+    if (begin == nullptr || end <= begin) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(gHudMutex);
+    gFadeNotes[list].push_back(
+        { static_cast<Fast::F3DGfx*>(begin), static_cast<Fast::F3DGfx*>(end), std::clamp(coverage, 0.0f, 1.0f) });
+}
+
 extern "C" void port_xr_note_world_sprite(const void* list, void* begin, void* end, const void* elem,
                                           const void* mtx) {
     if (begin == nullptr || end <= begin) {
@@ -2828,6 +2879,11 @@ extern "C" void port_xr_frame_main(const void* list) {
     }
     auto cam = gHudCameras.find(list);
     gHud.camMtx = cam != gHudCameras.end() ? cam->second : nullptr;
+    auto fades = gFadeNotes.find(list);
+    gHud.fades.clear();
+    if (fades != gFadeNotes.end()) {
+        gHud.fades = fades->second;
+    }
     auto sprites = gSpriteNotes.find(list);
     gHud.sprites.clear();
     if (sprites != gSpriteNotes.end()) {
@@ -2893,6 +2949,7 @@ extern "C" void port_xr_set_eye(int eye) {
             WriteHudBrackets(false);
             gHud.redirect = false;
         }
+        gXr.sceneOpacity = 1.0f;
         RestoreSprites();
     }
 }

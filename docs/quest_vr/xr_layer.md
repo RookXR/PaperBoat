@@ -112,7 +112,8 @@ range's framebuffer. What goes where:
 | battle menus (`btl_draw_ui` minus status bar), windows during battle | `PORT_XR_HUD_PARTY` | constant-scale "projector screen" facing room +z; its screen point (left edge, y 228 = foot of the menu wheel) sits at stage point (-260, 0, 60) mapped into the room like the scene, plus the offsets (`HudAnchoredLayer`) |
 | `render_messages` (all three call sites) | `PORT_XR_HUD_PLANE` | the frame camera's picture plane: through its look-at point, facing it, spanning exactly what it shows there (`HudPlaneFromCamera`), so bubbles sit over the speaker |
 | `render_curtains` (file-select theater) | `PORT_XR_HUD_PANEL` | around the file-select windows |
-| screen overlays back/front (`xr_render_screen_overlay`, except `OVERLAY_BLUR`) | `PORT_XR_HUD_PLANE` | fades and wipes over the stage; the battle swirl skips its prev-frame blur in the room view |
+| front-layer transitions (`screen_overlay_front_transition`: color fades, Mario/star wipes, battle swirl) | scene fade (`port_xr_note_scene_fade`) | skipped (opening bracket becomes a `G_DL` branch past them); the scene image's copy is multiplied by 1 - coverage (`uOpacity`, premultiplied), so the scene fades into the room. UI layers don't fade. Log: `Scene fade started/ended` |
+| other screen overlays back/front (`xr_render_screen_overlay`, except `OVERLAY_BLUR`): spotlights, darkness, back-layer dims | `PORT_XR_HUD_PLANE` | over the stage on the picture plane; the battle swirl skips its prev-frame blur in the room view |
 | `CAM_TATTLE` render (`render_frame` loop) and the `EFFECT_TATTLE_WINDOW` UI effect | `PORT_XR_HUD_PARTY` | tattle close-up in its frame on the battle-menu layer |
 | interact prompts, other `render_effects_UI` (damage numbers), `OVERLAY_BLUR` | none | stay in the eye images: 3D objects at world positions (room matrices); the blur samples an eye image |
 

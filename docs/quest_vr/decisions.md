@@ -155,3 +155,12 @@ against the scene. The hand faces the head; HP bars face the stage front (room +
 like the battle menus. **Why:** texture rectangles in the eye images can't rotate,
 so they rolled with the head; HP bars facing the head swung under their enemy when
 the owner moved. Owner: "looks perfect".
+
+### 2026-11-01 — Transitions fade the scene into the room
+
+In the room view a front-layer transition (color fade, Mario/star wipe, battle
+swirl) isn't drawn: its coverage (progress/255) lowers the scene image's opacity,
+so the world fades out to the passthrough room and back in. Wipe shapes and fade
+colors are dropped; UI layers stay up. **Why:** the overlay on the picture plane
+left the scene visible around a box; owner: "looks perfect and is so much better",
+fine with the status bar staying up.

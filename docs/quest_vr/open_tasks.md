@@ -51,6 +51,8 @@ table in `README.md`.
       lands on the steady panel at game-screen positions; same treatment if they matter.
 - [x] Screen overlays (fades, wipes, battle swirl), file-select theater, tattle
       close-up + frame off the eye images (2026-11-01).
+- [x] Transitions fade the scene into the passthrough room instead of a box
+      (2026-11-01).
 - [ ] `OVERLAY_BLUR` (prev-frame motion blur: Kammy, Mega Quake, slow-blur
       transition) still draws in the eye images and samples the other eye's image
       (one shared prev-frame mirror). Fix: a mirror per eye, or skip it in the room view.

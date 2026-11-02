@@ -204,8 +204,8 @@ void gfx_task_background(void) {
 // camera's picture plane so they sit over the speaker. Ranges may nest
 // (the inner one returns to the outer one's layer). Left in the eye images: the
 // interact prompts and UI effects (3D, drawn at world positions, e.g. damage
-// numbers) and the motion-blur overlay. Screen overlays (fades, wipes) go on the
-// picture plane too, like the screen they cover; the theater (curtains) on the
+// numbers) and the motion-blur overlay. Screen overlays go on the picture plane,
+// except transitions, which fade the scene instead; the theater (curtains) on the
 // panel, around the file select's windows.
 #define XR_HUD_BEGIN(name)     \
     Gfx* name = gMainGfxPos; \
@@ -215,10 +215,14 @@ void gfx_task_background(void) {
     port_xr_note_hud(gDisplayContext->mainGfx, name, gMainGfxPos - 1, kind)
 
 b32 screen_overlay_on_picture_plane(s32 layer);
+f32 screen_overlay_front_transition(void);
 
 // A screen overlay layer, bracketed for the picture plane when it draws there.
+// A front-layer transition is bracketed as a scene fade instead: the room view
+// skips it and fades the scene into the room (port_xr_note_scene_fade).
 static void xr_render_screen_overlay(s32 layer) {
     b32 onPlane = screen_overlay_on_picture_plane(layer);
+    f32 fade = layer == SCREEN_LAYER_FRONT ? screen_overlay_front_transition() : -1.0f;
     Gfx* begin = gMainGfxPos;
 
     if (onPlane) {
@@ -230,7 +234,12 @@ static void xr_render_screen_overlay(s32 layer) {
         render_screen_overlay_backUI();
     }
     if (onPlane) {
-        XR_HUD_END(begin, PORT_XR_HUD_PLANE);
+        gDPNoOp(gMainGfxPos++);
+        if (fade >= 0.0f) {
+            port_xr_note_scene_fade(gDisplayContext->mainGfx, begin, gMainGfxPos - 1, fade);
+        } else {
+            port_xr_note_hud(gDisplayContext->mainGfx, begin, gMainGfxPos - 1, PORT_XR_HUD_PLANE);
+        }
     }
 }
 
