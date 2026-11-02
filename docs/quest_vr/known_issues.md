@@ -15,6 +15,10 @@ stencils and back-layer dims are still on the picture plane: scene parts outside
 that frame aren't covered. If no frame camera is noted (e.g. file select, all
 cameras disabled) the plane isn't shown and such an overlay is invisible.
 
+### Sprite stacking only knows the stage-front screens
+Sprites are ordered against the battle-menu/star-point plane only; the panel and the
+picture plane (bubbles) always stack under all sprites.
+
 ### World sprite boxes can overlap
 Each sprite quad shows its bounding box of the shared sprite framebuffer; if two
 sprites' boxes overlap on the game screen (HP bars of close enemies, the hand over
@@ -133,3 +137,8 @@ The banners' entity models carry `ENTITY_MODEL_FLAG_CAM3`, so they are drawn by
 world pass where the first off-screen check was added (a diagnostic log of that check
 never fired). Their projection is the battle camera's, replaced per eye, so they were
 drawn room-projected into the panel framebuffer. Now bracketed back into the scene.
+
+### 2026-11-01 — Status icons on the panel; sprites drawn through the battle menu
+Status icons were placed from `get_screen_coords` onto the steady panel; now world
+sprites. All sprite quads were submitted last, so a marker behind the battle menu
+showed through it; now ordered by which side of the stage-front plane they are on.

@@ -181,3 +181,11 @@ back into the eye images with the room matrices (a 3D sign at their world
 position), not on a UI layer. **Why:** drawn in the back-UI pass they landed,
 room-projected, on the panel ("zooms in, very small on the HUD panel"); owner on
 the fix: "looks fantastic".
+
+### 2026-11-01 — Status icons as stage-facing sprites; sprite stacking by plane side
+
+Status icons over actors are anchored like the HP bars (stage-facing). Sprite quads
+behind the battle-menu/star-point screens (seen from the head) are submitted before
+those layers. **Why:** owner: Danger marker "floats randomly in that HUD panel",
+then (placed) "renders through the battle menu"; quads have no mutual depth test.
+Owner on the fix: "fantastic … fixed both the health bars and the danger status".

@@ -48,8 +48,13 @@ table in `README.md`.
 - [x] Star-point counter on its own layer at the stage's front right, mirroring the
       battle menus (2026-11-01).
 - [x] Enemy HP bars as world sprites (2026-11-01): stage-facing quads under each
-      enemy. Other `get_screen_coords` UI (status icons, msg_api, encounter) still
-      lands on the steady panel at game-screen positions; same treatment if they matter.
+      enemy.
+- [x] Status icons over actors (Danger, Peril, statuses, boosts) as stage-facing
+      world sprites; sprites behind the stage-front screens stack under them
+      (2026-11-01). Other `get_screen_coords` UI (msg_api, encounter) still lands on
+      the steady panel; same treatment if it matters.
+- [ ] Sprite budget: 10 quads (hand + HP bars + status icons). Crowded battles with
+      many statuses may drop some; merge per actor if the owner sees it.
 - [x] Screen overlays (fades, wipes, battle swirl), file-select theater, tattle
       close-up + frame off the eye images (2026-11-01).
 - [x] Transitions fade the scene into the passthrough room instead of a box

@@ -1,4 +1,5 @@
 #include "common.h"
+#include "port/xr/quest_xr.h"
 #include "npc.h"
 #include "hud_element.h"
 #include "message_ids.h"
@@ -579,6 +580,14 @@ void update_all_status_icons(void* data) {
     }
 }
 
+// Quest room view: a status icon (Danger, Peril, poison, boosts, ...) stands
+// over its actor in the scene: anchored at the world point the game placed it
+// from, shown as a stage-facing world sprite (like the enemy HP bars) instead of
+// on the steady panel at the flat screen position.
+static void xr_anchor_status_icon(s32 elementId, f32 x, f32 y, f32 z, s32 screenX, s32 screenY) {
+    port_xr_anchor_stage_sprite(get_hud_element(elementId), gCurrentCameraID, x, y, z, screenX, screenY);
+}
+
 void draw_all_status_icons(void* data) {
     HudStatusIcon* icon;
     s32 elementId;
@@ -624,6 +633,7 @@ void draw_all_status_icons(void* data) {
                 get_screen_coords(gCurrentCameraID, x, y, z, &screenX, &screenY, &screenZ);
                 elementId = icon->status1.activeElementHID;
                 hud_element_set_render_pos(elementId, screenX - 8, screenY - 8);
+                xr_anchor_status_icon(elementId, x, y, z, screenX, screenY);
                 hud_element_draw_next(elementId);
                 iconCounter = 1;
                 isActiveDrawn = 1;
@@ -647,6 +657,7 @@ void draw_all_status_icons(void* data) {
             get_screen_coords(gCurrentCameraID, x, y, z, &screenX, &screenY, &screenZ);
             elementId = icon->status1.removingElementHID;
             hud_element_set_render_pos(elementId, screenX - 8, screenY - 8);
+            xr_anchor_status_icon(elementId, x, y, z, screenX, screenY);
             hud_element_draw_next(elementId);
         }
 
@@ -670,6 +681,7 @@ void draw_all_status_icons(void* data) {
                 get_screen_coords(gCurrentCameraID, x, y, z, &screenX, &screenY, &screenZ);
                 elementId = icon->status2.activeElementHID;
                 hud_element_set_render_pos(elementId, screenX - 8, screenY - 8);
+                xr_anchor_status_icon(elementId, x, y, z, screenX, screenY);
                 hud_element_draw_next(elementId);
 
                 iconCounter++;
@@ -698,6 +710,7 @@ void draw_all_status_icons(void* data) {
             get_screen_coords(gCurrentCameraID, x, y, z, &screenX, &screenY, &screenZ);
             elementId = icon->status2.removingElementHID;
             hud_element_set_render_pos(elementId, screenX - 8, screenY - 8);
+            xr_anchor_status_icon(elementId, x, y, z, screenX, screenY);
             hud_element_draw_next(elementId);
         }
 
@@ -723,6 +736,7 @@ void draw_all_status_icons(void* data) {
                 get_screen_coords(gCurrentCameraID, x, y, z, &screenX, &screenY, &screenZ);
                 elementId = icon->status3.activeElementHID;
                 hud_element_set_render_pos(elementId, screenX - 8, screenY - 8);
+                xr_anchor_status_icon(elementId, x, y, z, screenX, screenY);
                 hud_element_draw_next(elementId);
                 iconCounter++;
                 isActiveDrawn = 1;
@@ -753,6 +767,7 @@ void draw_all_status_icons(void* data) {
             get_screen_coords(gCurrentCameraID, x, y, z, &screenX, &screenY, &screenZ);
             elementId = icon->status3.removingElementHID;
             hud_element_set_render_pos(elementId, screenX - 8, screenY - 8);
+            xr_anchor_status_icon(elementId, x, y, z, screenX, screenY);
             hud_element_draw_next(elementId);
         }
 
@@ -782,6 +797,7 @@ void draw_all_status_icons(void* data) {
                 get_screen_coords(gCurrentCameraID, x, y, z, &screenX, &screenY, &screenZ);
                 elementId = icon->status4.activeElementHID;
                 hud_element_set_render_pos(elementId, screenX - 8, screenY - 8);
+                xr_anchor_status_icon(elementId, x, y, z, screenX, screenY);
                 hud_element_draw_next(elementId);
                 iconCounter++;
                 isActiveDrawn = 1;
@@ -815,6 +831,7 @@ void draw_all_status_icons(void* data) {
             get_screen_coords(gCurrentCameraID, x, y, z, &screenX, &screenY, &screenZ);
             elementId = icon->status4.removingElementHID;
             hud_element_set_render_pos(elementId, screenX - 8, screenY - 8);
+            xr_anchor_status_icon(elementId, x, y, z, screenX, screenY);
             hud_element_draw_next(elementId);
         }
 
@@ -831,6 +848,7 @@ void draw_all_status_icons(void* data) {
                     get_screen_coords(gCurrentCameraID, x, icon->worldPos.y + icon->offsetY, z, &screenX, &screenY, &screenZ);
                     elementId = icon->boostJump.activeElementID;
                     hud_element_set_render_pos(elementId, screenX + 2, screenY - 12);
+                    xr_anchor_status_icon(elementId, x, icon->worldPos.y + icon->offsetY, z, screenX, screenY);
                     hud_element_draw_next(elementId);
                 }
             }
@@ -845,6 +863,7 @@ void draw_all_status_icons(void* data) {
             get_screen_coords(gCurrentCameraID, x, icon->worldPos.y + icon->offsetY, z, &screenX, &screenY, &screenZ);
             elementId = icon->prevIndexBoostJump;
             hud_element_set_render_pos(elementId, screenX + 2, screenY - 12);
+            xr_anchor_status_icon(elementId, x, icon->worldPos.y + icon->offsetY, z, screenX, screenY);
             hud_element_draw_next(elementId);
         }
 
@@ -861,6 +880,7 @@ void draw_all_status_icons(void* data) {
                     get_screen_coords(gCurrentCameraID, x, icon->worldPos.y + icon->offsetY, z, &screenX, &screenY, &screenZ);
                     elementId = icon->boostHammer.activeElementID;
                     hud_element_set_render_pos(elementId, screenX + 2, screenY - 12);
+                    xr_anchor_status_icon(elementId, x, icon->worldPos.y + icon->offsetY, z, screenX, screenY);
                     hud_element_draw_next(elementId);
                 }
             }
@@ -875,6 +895,7 @@ void draw_all_status_icons(void* data) {
             get_screen_coords(gCurrentCameraID, x, icon->worldPos.y + icon->offsetY, z, &screenX, &screenY, &screenZ);
             elementId = icon->prevIndexBoostHammer;
             hud_element_set_render_pos(elementId, screenX + 2, screenY - 12);
+            xr_anchor_status_icon(elementId, x, icon->worldPos.y + icon->offsetY, z, screenX, screenY);
             hud_element_draw_next(elementId);
         }
 
@@ -891,6 +912,7 @@ void draw_all_status_icons(void* data) {
                     get_screen_coords(gCurrentCameraID, x, icon->worldPos.y + icon->offsetY, z, &screenX, &screenY, &screenZ);
                     elementId = icon->boostPartner.activeElementID;
                     hud_element_set_render_pos(elementId, screenX + 2, screenY - 12);
+                    xr_anchor_status_icon(elementId, x, icon->worldPos.y + icon->offsetY, z, screenX, screenY);
                     hud_element_draw_next(elementId);
                 }
             }
@@ -909,6 +931,7 @@ void draw_all_status_icons(void* data) {
                     get_screen_coords(gCurrentCameraID, x, icon->worldPos.y + icon->offsetY, z, &screenX, &screenY, &screenZ);
                     elementId = icon->surprise.activeElementID;
                     hud_element_set_render_pos(elementId, screenX + 2, screenY - 15);
+                    xr_anchor_status_icon(elementId, x, icon->worldPos.y + icon->offsetY, z, screenX, screenY);
                     hud_element_draw_next(elementId);
                 }
             }
@@ -927,6 +950,7 @@ void draw_all_status_icons(void* data) {
                     get_screen_coords(gCurrentCameraID, x, icon->worldPos.y + icon->offsetY, z, &screenX, &screenY, &screenZ);
                     elementId = icon->peril.activeElementID;
                     hud_element_set_render_pos(elementId, screenX + 2, screenY - 16);
+                    xr_anchor_status_icon(elementId, x, icon->worldPos.y + icon->offsetY, z, screenX, screenY);
                     hud_element_draw_next(elementId);
                 }
             }
@@ -945,6 +969,7 @@ void draw_all_status_icons(void* data) {
                     get_screen_coords(gCurrentCameraID, x, icon->worldPos.y + icon->offsetY, z, &screenX, &screenY, &screenZ);
                     elementId = icon->danger.activeElementID;
                     hud_element_set_render_pos(elementId, screenX + 2, screenY - 16);
+                    xr_anchor_status_icon(elementId, x, icon->worldPos.y + icon->offsetY, z, screenX, screenY);
                     hud_element_draw_next(elementId);
                 }
             }

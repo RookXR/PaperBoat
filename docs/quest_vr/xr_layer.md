@@ -128,9 +128,11 @@ fifths of one 1280×3600 swapchain; `EndFrame` adds one quad per layer after the
 projection layer, then the sprite quads (premultiplied alpha; quads always draw
 over the scene).
 
-**World sprites** (the battle target hand, enemy HP bars). `select_target.c` anchors
-the hand's hud element (`port_xr_anchor_hud_element`), `btl_draw_enemy_health_bars`
-each bar (`port_xr_anchor_stage_sprite`, keyed by the actor) to a world point and
+**World sprites** (the battle target hand, enemy HP bars, status icons over actors).
+`select_target.c` anchors the hand's hud element (`port_xr_anchor_hud_element`),
+`btl_draw_enemy_health_bars` each bar (`port_xr_anchor_stage_sprite`, keyed by the
+actor), `draw_all_status_icons` every icon draw (Danger, Peril, poison, boosts, …;
+`xr_anchor_status_icon`, stage-facing) to a world point and
 the screen position the game derived; the draw is bracketed and reported with
 `port_xr_note_world_sprite`. In a room-view pair the brackets become `G_SETFB`
 sprite framebuffer / back to the range's framebuffer, so sprites draw unshifted at
@@ -142,6 +144,12 @@ anchor mapped into the room; upright, facing the head (hand) or room +z (stage
 sprites). Log: `Sprite quad: anchor … box … -> w x h m at …` (~10 s). With
 `gXrHud` 0 the old per-eye path remains (`ShiftSprite`, `TransformSpriteRects`
 moves/scales texrects and fill rects in the eye images).
+
+**Layer order.** Quad layers don't depth-test each other; they stack in submission
+order. `EndFrame` submits back to front: panel, picture plane, sprites behind the
+stage-front screens' plane (the party layer's, else the stage layer's, tested
+against the head position of the image), party layer, stage layer, the other
+sprites. At most 10 sprite quads (16 compositor layers in all).
 
 **Star points.** The counter (`btl_update_starpoints_display`, via
 `xr_draw_starpoints`) is bracketed as `PORT_XR_HUD_STAGE`: the party layer's mirror,
@@ -155,5 +163,5 @@ with the battle camera's projection; their virtual entities are marked
 then back to the enclosing range's framebuffer), so the room matrices put them at
 their world position, and they are skipped while off the frame camera's screen.
 
-**Not handled yet:** other `get_screen_coords` users (status icons, msg_api,
-encounter); `OVERLAY_BLUR` (see `known_issues.md`).
+**Not handled yet:** other `get_screen_coords` users (msg_api, encounter);
+`OVERLAY_BLUR` (see `known_issues.md`).

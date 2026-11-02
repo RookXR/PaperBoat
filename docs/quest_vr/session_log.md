@@ -151,5 +151,10 @@ if wanted; then the dollhouse camera (`open_tasks.md`).
   model drawn in the back-UI pass; now drawn back into the scene. Owner: "looks
   fantastic". Level-up banner not seen yet.
 
-**Next:** level-up banner when the owner levels up; `OVERLAY_BLUR` per-eye; other
-`get_screen_coords` UI if it matters; then the dollhouse camera (`open_tasks.md`).
+- Pushed. Status icons over actors (Danger, Peril, …) anchored as stage-facing
+  world sprites; sprite quads behind the stage-front screens now stack under them
+  (compositor quads don't depth-test). Owner: "fantastic", fixed for HP bars and the
+  Danger marker.
+
+**Next:** level-up banner when the owner levels up; `OVERLAY_BLUR` per-eye; the
+sprite budget if markers go missing; then the dollhouse camera (`open_tasks.md`).

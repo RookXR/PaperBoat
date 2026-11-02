@@ -1173,6 +1173,7 @@ struct SpriteQuad {
     XrRect2Di rect;
 };
 const std::vector<SpriteQuad>& HudImageSprites();
+void Rotate(const XrQuaternionf& q, const float v[3], float out[3]);
 HudPlane HudPanelPose();
 const HudPlane* HudImagePlane();
 const HudPlane* HudImageParty();
@@ -1225,10 +1226,10 @@ void EndFrame(const XrFrameState& frame, bool showScreen) {
             const HudPlane* stage = HudImageStage();
             const HudPlane placed[4] = { HudPanelPose(), plane != nullptr ? *plane : HudPlane{},
                                          party != nullptr ? *party : HudPlane{}, stage != nullptr ? *stage : HudPlane{} };
-            for (int k = 0; k < 4; k++) {
+            auto addLayer = [&](int k) {
                 if ((k == PORT_XR_HUD_PLANE && plane == nullptr) || (k == PORT_XR_HUD_PARTY && party == nullptr) ||
                     (k == PORT_XR_HUD_STAGE && stage == nullptr)) {
-                    continue;
+                    return;
                 }
                 XrCompositionLayerQuad& quad = hudQuads[k];
                 quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
@@ -1239,10 +1240,32 @@ void EndFrame(const XrFrameState& frame, bool showScreen) {
                 quad.pose = placed[k].pose;
                 quad.size = { placed[k].width, placed[k].height };
                 layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad);
-            }
-            // World sprites last (over the menus): each its own small upright quad.
+            };
+            // World sprites: each its own small upright quad. Quad layers don't
+            // depth-test each other, they stack in submission order, so a sprite
+            // behind the stage-front screens (battle menus, star points: both
+            // stand at the stage's front edge) as seen from the head goes under
+            // them, the others over everything.
             const std::vector<SpriteQuad>& sprites = HudImageSprites();
-            for (size_t i = 0; i < sprites.size() && i < (size_t) kMaxSpriteQuads; i++) {
+            const size_t spriteCount = std::min(sprites.size(), (size_t) kMaxSpriteQuads);
+            const HudPlane* front = party != nullptr ? party : stage;
+            const float head[3] = { 0.5f * (gXr.imageViews[0].pose.position.x + gXr.imageViews[1].pose.position.x),
+                                    0.5f * (gXr.imageViews[0].pose.position.y + gXr.imageViews[1].pose.position.y),
+                                    0.5f * (gXr.imageViews[0].pose.position.z + gXr.imageViews[1].pose.position.z) };
+            auto behindFront = [&](const SpriteQuad& sprite) {
+                if (front == nullptr) {
+                    return false;
+                }
+                const float z[3] = { 0.0f, 0.0f, 1.0f };
+                float n[3];
+                Rotate(front->pose.orientation, z, n);
+                const XrVector3f& p0 = front->pose.position;
+                const XrVector3f& c = sprite.plane.pose.position;
+                const float sideHead = (head[0] - p0.x) * n[0] + (head[1] - p0.y) * n[1] + (head[2] - p0.z) * n[2];
+                const float sideSprite = (c.x - p0.x) * n[0] + (c.y - p0.y) * n[1] + (c.z - p0.z) * n[2];
+                return (sideHead >= 0.0f) != (sideSprite >= 0.0f);
+            };
+            auto addSprite = [&](size_t i) {
                 XrCompositionLayerQuad& quad = spriteQuads[i];
                 quad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
                 quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
@@ -1253,6 +1276,22 @@ void EndFrame(const XrFrameState& frame, bool showScreen) {
                 quad.pose = sprites[i].plane.pose;
                 quad.size = { sprites[i].plane.width, sprites[i].plane.height };
                 layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad);
+            };
+            // Back to front: panel, picture plane, sprites behind the stage
+            // front, battle menus, star points, sprites in front.
+            addLayer(PORT_XR_HUD_PANEL);
+            addLayer(PORT_XR_HUD_PLANE);
+            for (size_t i = 0; i < spriteCount; i++) {
+                if (behindFront(sprites[i])) {
+                    addSprite(i);
+                }
+            }
+            addLayer(PORT_XR_HUD_PARTY);
+            addLayer(PORT_XR_HUD_STAGE);
+            for (size_t i = 0; i < spriteCount; i++) {
+                if (!behindFront(sprites[i])) {
+                    addSprite(i);
+                }
             }
         }
     } else if (showScreen) {
