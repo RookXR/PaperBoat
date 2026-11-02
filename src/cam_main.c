@@ -123,6 +123,14 @@ void render_frame(s32 isSecondPass) {
         gCurrentCamID = camID;
         FrameInterpolation_RecordOpenChild("camera_render", TAG_CAMERA(camID, camera));
 
+        // Quest room view: the tattle camera's close-up is a picture inside its
+        // window, so it draws into the battle-menu layer with the window (its
+        // matrix is the game's own, tattle_cam_pre_render, not a room view).
+        Gfx* xrTattle = gMainGfxPos;
+        if (camID == CAM_TATTLE) {
+            gDPNoOp(gMainGfxPos++);
+        }
+
         CALL_EVENT(CameraFitViewport, camID, camera);
 
         if (camera->fpDoPreRender != nullptr) {
@@ -273,6 +281,11 @@ void render_frame(s32 isSecondPass) {
         gDPSetColorImage(gMainGfxPos++, G_IM_FMT_RGBA, G_IM_SIZ_16b, SCREEN_WIDTH,
                             osVirtualToPhysical(nuGfxCfb_ptr));
         gDPPipeSync(gMainGfxPos++);
+
+        if (camID == CAM_TATTLE) {
+            gDPNoOp(gMainGfxPos++);
+            port_xr_note_hud(gDisplayContext->mainGfx, xrTattle, gMainGfxPos - 1, PORT_XR_HUD_PARTY);
+        }
 
         FrameInterpolation_RecordCloseChild();
     }

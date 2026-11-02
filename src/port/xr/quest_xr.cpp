@@ -118,6 +118,10 @@ constexpr int kRenderHeight = 1080;
 // One UI layer in the HUD swapchain: the 16:9 screen (native 426.7x240) at 3x.
 constexpr int kHudImageW = 1280;
 constexpr int kHudImageH = 720;
+// The fourth UI framebuffer (after PORT_XR_HUD_PANEL/PLANE/PARTY): world sprites
+// (target hand, enemy HP bars), each shown on its own small quad in the room.
+constexpr int kHudSpriteKind = 3;
+constexpr int kMaxSpriteQuads = 10; // the compositor takes 16 layers in all
 
 constexpr XrDuration kStatsPeriod = 5000000000; // 5 s
 
@@ -280,6 +284,7 @@ std::unordered_map<const void*, bool> gBackgroundCutout;
 
 // Read by the game thread while it builds a frame.
 std::atomic<bool> gCutoutAvailable{ false };
+std::atomic<bool> gRoomViewActive{ false }; // the latest stereo pair was a room view
 
 bool Ok(XrResult result, const char* what) {
     if (XR_SUCCEEDED(result)) {
@@ -1154,6 +1159,12 @@ struct HudPlane {
     XrPosef pose;
     float width, height; // m
 };
+// A world sprite's quad: its rectangle of the HUD swapchain's sprite third.
+struct SpriteQuad {
+    HudPlane plane;
+    XrRect2Di rect;
+};
+const std::vector<SpriteQuad>& HudImageSprites();
 HudPlane HudPanelPose();
 const HudPlane* HudImagePlane();
 const HudPlane* HudImageParty();
@@ -1167,7 +1178,8 @@ void EndFrame(const XrFrameState& frame, bool showScreen) {
     XrCompositionLayerQuad quads[2] = { { XR_TYPE_COMPOSITION_LAYER_QUAD }, { XR_TYPE_COMPOSITION_LAYER_QUAD } };
     XrCompositionLayerQuad hudQuads[3] = { { XR_TYPE_COMPOSITION_LAYER_QUAD }, { XR_TYPE_COMPOSITION_LAYER_QUAD },
                                            { XR_TYPE_COMPOSITION_LAYER_QUAD } };
-    const XrCompositionLayerBaseHeader* layers[6] = {};
+    XrCompositionLayerQuad spriteQuads[kMaxSpriteQuads];
+    const XrCompositionLayerBaseHeader* layers[6 + kMaxSpriteQuads] = {};
     uint32_t layerCount = 0;
     XrFrameEndInfo endInfo{ XR_TYPE_FRAME_END_INFO };
     endInfo.displayTime = frame.predictedDisplayTime;
@@ -1214,6 +1226,20 @@ void EndFrame(const XrFrameState& frame, bool showScreen) {
                 quad.subImage.imageRect = { { 0, k * kHudImageH }, { kHudImageW, kHudImageH } };
                 quad.pose = placed[k].pose;
                 quad.size = { placed[k].width, placed[k].height };
+                layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad);
+            }
+            // World sprites last (over the menus): each its own small upright quad.
+            const std::vector<SpriteQuad>& sprites = HudImageSprites();
+            for (size_t i = 0; i < sprites.size() && i < (size_t) kMaxSpriteQuads; i++) {
+                XrCompositionLayerQuad& quad = spriteQuads[i];
+                quad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
+                quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+                quad.space = gXr.local;
+                quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+                quad.subImage.swapchain = HudSwapchain();
+                quad.subImage.imageRect = sprites[i].rect;
+                quad.pose = sprites[i].plane.pose;
+                quad.size = { sprites[i].plane.width, sprites[i].plane.height };
                 layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad);
             }
         }
@@ -1749,15 +1775,16 @@ void RoomCheck(const float m[4][4], const CameraNote& cam) {
 // released room image copies them into thirds of the HUD swapchain
 // (CopyHudImage), each shown on a quad.
 //
-// World-anchored elements (the battle target hand) are bracketed separately
-// inside a UI range (port_xr_note_world_sprite): their brackets become
-// G_RESETFB / G_SETFB back, so they draw into the eye images, and per eye
-// their texture rectangles move by where that eye sees the anchor point
-// minus where the game put it on screen, and scale about it so their size
-// against the scene matches the game's (ShiftSprite): they sit at the
-// anchor's depth in the scene.
+// World-anchored elements (the battle target hand, enemy HP bars) are
+// bracketed separately (port_xr_note_world_sprite): their brackets become
+// G_SETFB to a fourth framebuffer (kHudSpriteKind) and back, and each is shown
+// on its own quad (SpriteQuadFor): its box of that framebuffer, at the game's
+// size against the scene, with its anchor's screen point on the anchor mapped
+// into the room; upright, facing the head, or the stage's front for stage
+// sprites (HP bars). Without the UI layers (gXrHud 0) they draw into the eye
+// images, moved and scaled per eye to the anchor (ShiftSprite).
 
-constexpr int kHudKinds = 3;               // PORT_XR_HUD_PANEL, PORT_XR_HUD_PLANE, PORT_XR_HUD_PARTY
+constexpr int kHudKinds = 4; // PORT_XR_HUD_PANEL, PORT_XR_HUD_PLANE, PORT_XR_HUD_PARTY, kHudSpriteKind
 constexpr const char* kHudCVar = "gXrHud"; // 1 = UI off the eye images in the room view (default)
 constexpr const char* kHudBackingCVar = "gXrHudBacking"; // debug: alpha of a black card behind the UI
 constexpr float kDefaultHudBacking = 0.0f;
@@ -1810,13 +1837,14 @@ struct WorldSprite {
     float world[3];   // anchor point
     int screen[2];    // where the game put it on screen (native px)
     int kind = -1;    // kind of the UI range it sits in, -1 = none
+    bool stageFacing = false; // its quad faces the stage's front (room +z), not the head
     std::vector<std::pair<uintptr_t, uintptr_t>> saved; // the commands between the brackets, as built
 };
 
 struct Hud {
     std::vector<HudRange> ranges;     // of the frame being drawn (port_xr_frame_main)
     std::vector<WorldSprite> sprites; // ditto
-    int fb[kHudKinds] = { -1, -1, -1 }; // Fast3D framebuffer ids
+    int fb[kHudKinds] = { -1, -1, -1, -1 }; // Fast3D framebuffer ids
     bool fbFailed = false;
     bool redirect = false; // the current pair draws the UI into fb
     bool loggedRedirect = false;
@@ -1836,6 +1864,8 @@ struct Hud {
     HudPlane party = {};
     bool imagePartyValid = false; // ...as of the released image
     HudPlane imageParty = {};
+    std::vector<SpriteQuad> spriteQuads;      // for the pair being drawn
+    std::vector<SpriteQuad> imageSpriteQuads; // ...as of the released image
     int logCountdown = 0;
     int spriteLogCountdown = 0;
 };
@@ -1848,6 +1878,7 @@ struct HudAnchor {
     float world[3];
     int screen[2];
     unsigned stamp; // gHudBuild when set
+    bool stageFacing; // port_xr_anchor_stage_sprite
 };
 std::mutex gHudMutex;
 std::unordered_map<const void*, std::vector<HudRange>> gHudNotes;
@@ -1890,7 +1921,10 @@ bool CreateHudFramebuffers() {
         }
         gHud.fb[k] = fb;
         LOGI("HUD framebuffer %d for the %s (%ux%u for 320x240)", fb,
-             k == PORT_XR_HUD_PANEL ? "panel" : k == PORT_XR_HUD_PLANE ? "plane" : "party layer",
+             k == PORT_XR_HUD_PANEL ? "panel"
+             : k == PORT_XR_HUD_PLANE ? "plane"
+             : k == PORT_XR_HUD_PARTY ? "party layer"
+                                      : "world sprites",
              it->second.applied_width, it->second.applied_height);
     }
     gHud.fbFailed = false;
@@ -1965,9 +1999,13 @@ void WriteHudBrackets(bool redirect) {
         }
     }
     for (const WorldSprite& sprite : gHud.sprites) {
-        if (redirect && sprite.kind >= 0) {
-            ResetFb(sprite.begin); // into the eye image...
-            SetFb(sprite.end, gHud.fb[sprite.kind]); // ...and back to the range's framebuffer
+        if (redirect) {
+            SetFb(sprite.begin, gHud.fb[kHudSpriteKind]); // into the sprite framebuffer...
+            if (sprite.kind >= 0) {
+                SetFb(sprite.end, gHud.fb[sprite.kind]); // ...and back to the range's framebuffer
+            } else {
+                ResetFb(sprite.end);
+            }
         } else {
             NoOp(sprite.begin);
             NoOp(sprite.end);
@@ -1991,10 +2029,10 @@ int SignExtend24(uintptr_t v) {
     return (int) ((uint32_t) (v & 0xFFFFFF) << 8) >> 8;
 }
 
-// Transforms a world sprite's texture rectangles (as built): native x
+// Transforms a world sprite's texture and fill rectangles (as built): native x
 // becomes px + f * (x - ax), likewise y, and the texture steps are divided
 // by f. G_TEXRECT_WIDE (24-bit signed 10.2, then s/t and steps) is scaled;
-// G_TEXRECT/FLIP (12-bit 10.2) is only moved.
+// G_TEXRECT/FLIP (12-bit 10.2) is only moved; G_FILLRECT is moved and scaled.
 void TransformSpriteRects(const WorldSprite& sprite, float ax, float ay, float px, float py, float f) {
     auto to4 = [&](int v4, float a, float p) { return (int) std::lround(4.0f * (p + f * (v4 / 4.0f - a))); };
     for (Fast::F3DGfx* cmd = sprite.begin + 1; cmd < sprite.end; ++cmd) {
@@ -2024,6 +2062,14 @@ void TransformSpriteRects(const WorldSprite& sprite, float ax, float ay, float p
             move(cmd->words.w0);
             move(cmd->words.w1);
             cmd += 2; // the two RDPHALF words
+        } else if (op == 0xF6) { // G_FILLRECT: w0 lrx, lry; w1 ulx, uly (12-bit 10.2), e.g. HP bar strips
+            auto place = [&](uintptr_t& word) {
+                const int x = std::clamp(to4((int) ((word >> 12) & 0xFFF), ax, px), 0, 0xFFF);
+                const int y = std::clamp(to4((int) (word & 0xFFF), ay, py), 0, 0xFFF);
+                word = (word & ~(uintptr_t) 0xFFFFFF) | ((uintptr_t) x << 12) | (uintptr_t) y;
+            };
+            place(cmd->words.w0);
+            place(cmd->words.w1);
         }
     }
 }
@@ -2261,7 +2307,10 @@ void LogHudCoverage() {
         }
         char buf[96];
         std::snprintf(buf, sizeof(buf), " | %s %.1f%% cols %d-%d rows %d-%d",
-                      k == PORT_XR_HUD_PANEL ? "panel" : k == PORT_XR_HUD_PLANE ? "plane" : "party",
+                      k == PORT_XR_HUD_PANEL ? "panel"
+                      : k == PORT_XR_HUD_PLANE ? "plane"
+                      : k == PORT_XR_HUD_PARTY ? "party"
+                                               : "sprites",
                       100.0f * count / (kCoverageW * kCoverageH), x0, x1, y0, y1);
         line += buf;
     }
@@ -2312,6 +2361,7 @@ bool CopyHudImage() {
     gHud.imagePlane = gHud.plane;
     gHud.imagePartyValid = gHud.partyValid;
     gHud.imageParty = gHud.party;
+    gHud.imageSpriteQuads = gHud.spriteQuads;
     XrSwapchainImageReleaseInfo release{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
     return Ok(xrReleaseSwapchainImage(gHud.swapchain, &release), "xrReleaseSwapchainImage (HUD)");
 }
@@ -2351,6 +2401,110 @@ const HudPlane* HudImagePlane() {
 
 const HudPlane* HudImageParty() {
     return gHud.imagePartyValid ? &gHud.imageParty : nullptr;
+}
+
+const std::vector<SpriteQuad>& HudImageSprites() {
+    return gHud.imageSpriteQuads;
+}
+
+// The bounding box of a world sprite's rectangles (as built), native px.
+bool SpriteBounds(const WorldSprite& sprite, float* x0, float* y0, float* x1, float* y1) {
+    float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
+    auto add = [&](float x, float y) {
+        minX = std::min(minX, x), maxX = std::max(maxX, x);
+        minY = std::min(minY, y), maxY = std::max(maxY, y);
+    };
+    auto add12 = [&](uintptr_t word) { add(((word >> 12) & 0xFFF) / 4.0f, (word & 0xFFF) / 4.0f); };
+    for (const Fast::F3DGfx* cmd = sprite.begin + 1; cmd < sprite.end; ++cmd) {
+        const uint32_t op = (uint32_t) ((cmd->words.w0 >> 24) & 0xFF);
+        if (op == 0x37 && cmd + 2 < sprite.end) { // G_TEXRECT_WIDE: lrx, lry; ulx, uly; ...
+            add(SignExtend24(cmd->words.w0) / 4.0f, SignExtend24(cmd->words.w1) / 4.0f);
+            add(SignExtend24(cmd[1].words.w0) / 4.0f, SignExtend24(cmd[1].words.w1) / 4.0f);
+            cmd += 2;
+        } else if (op == 0xE4 || op == 0xE5) { // G_TEXRECT(FLIP), then two RDPHALF words
+            add12(cmd->words.w0);
+            add12(cmd->words.w1);
+            cmd += 2;
+        } else if (op == 0xF6) { // G_FILLRECT
+            add12(cmd->words.w0);
+            add12(cmd->words.w1);
+        }
+    }
+    if (maxX <= minX || maxY <= minY) {
+        return false;
+    }
+    *x0 = minX, *y0 = minY, *x1 = maxX, *y1 = maxY;
+    return true;
+}
+
+// A world sprite's quad for the pair being drawn: the sprite's box of the
+// sprite framebuffer (drawn where the game put it), at the size it has against
+// the scene in the game (game matrix `game`), placed so its anchor's screen
+// point sits on the anchor mapped into the room like the scene, upright and
+// turned toward the head: head roll doesn't tilt it.
+bool SpriteQuadFor(const WorldSprite& sprite, const float game[4][4], const CameraNote& cam, const XrVector3f& head,
+                   SpriteQuad* out) {
+    float x0, y0, x1, y1;
+    const float fx = cam.at[0] - cam.eye[0], fz = cam.at[2] - cam.eye[2];
+    if (fx * fx + fz * fz < 1e-6f || !SpriteBounds(sprite, &x0, &y0, &x1, &y1)) {
+        return false;
+    }
+    // Meters per native px: 10 world units up at the anchor, as the game shows them.
+    const float up10[3] = { sprite.world[0], sprite.world[1] + 10.0f, sprite.world[2] };
+    float gx, gy, gux, guy;
+    if (!NativeScreenPoint(game, cam, sprite.world, &gx, &gy) || !NativeScreenPoint(game, cam, up10, &gux, &guy)) {
+        return false;
+    }
+    const float gameLen = std::hypot(gux - gx, guy - gy);
+    if (gameLen < 1e-3f) {
+        return false;
+    }
+    const RoomParams room = ReadRoomParams();
+    const float extra = std::clamp(CVarGetFloat(kHudSpriteScaleCVar, 1.0f), 0.1f, 4.0f);
+    const float mpp = extra * (10.0f / room.unitsPerMeter) / gameLen;
+    // The box in the sprite third: x from the screen's left edge, GL rows
+    // bottom-up with the top of the screen at the top (as the UI quads show it).
+    const float left = 160.0f - 120.0f * kRenderAspect;
+    const float ppx = kHudImageW / (240.0f * kRenderAspect), ppy = kHudImageH / 240.0f;
+    const int px0 = std::clamp((int) std::floor((x0 - left) * ppx), 0, kHudImageW);
+    const int px1 = std::clamp((int) std::ceil((x1 - left) * ppx), 0, kHudImageW);
+    const int py0 = std::clamp((int) std::floor((240.0f - y1) * ppy), 0, kHudImageH);
+    const int py1 = std::clamp((int) std::ceil((240.0f - y0) * ppy), 0, kHudImageH);
+    if (px1 <= px0 || py1 <= py0) {
+        return false;
+    }
+    out->rect = { { px0, kHudSpriteKind * kHudImageH + py0 }, { px1 - px0, py1 - py0 } };
+    const float nx0 = left + px0 / ppx, nx1 = left + px1 / ppx;            // native, as rounded
+    const float nyTop = 240.0f - py1 / ppy, nyBottom = 240.0f - py0 / ppy; // native y down
+    const double world[3] = { sprite.world[0], sprite.world[1], sprite.world[2] };
+    double r[3];
+    WorldToRoom(world, cam, room, r);
+    const XrVector3f anchor = { (float) r[0], (float) r[1], (float) r[2] };
+    // Stage sprites (HP bars) face the stage's front like the battle menus, so
+    // they stay put when the head moves; the others turn toward the head.
+    const XrQuaternionf facing = sprite.stageFacing
+                                     ? XrQuaternionf{ 0.0f, 0.0f, 0.0f, 1.0f }
+                                     : FacingOrigin({ anchor.x - head.x, anchor.y - head.y, anchor.z - head.z });
+    const float ax[3] = { 1.0f, 0.0f, 0.0f }, ay[3] = { 0.0f, 1.0f, 0.0f };
+    float right[3], upAxis[3];
+    Rotate(facing, ax, right);
+    Rotate(facing, ay, upAxis);
+    const float dx = (0.5f * (nx0 + nx1) - sprite.screen[0]) * mpp;
+    const float dy = (sprite.screen[1] - 0.5f * (nyTop + nyBottom)) * mpp;
+    out->plane.pose.orientation = facing;
+    out->plane.pose.position = { anchor.x + dx * right[0] + dy * upAxis[0], anchor.y + dx * right[1] + dy * upAxis[1],
+                                 anchor.z + dx * right[2] + dy * upAxis[2] };
+    out->plane.width = (nx1 - nx0) * mpp;
+    out->plane.height = (nyBottom - nyTop) * mpp;
+    if (--gHud.spriteLogCountdown <= 0) {
+        gHud.spriteLogCountdown = kHudPlaneLogPresents;
+        LOGI("Sprite quad: anchor %.0f %.0f %.0f (screen %d,%d), box %.0f,%.0f-%.0f,%.0f px -> %.3f x %.3f m at "
+             "%+.2f %+.2f %+.2f m",
+             sprite.world[0], sprite.world[1], sprite.world[2], sprite.screen[0], sprite.screen[1], x0, y0, x1, y1,
+             out->plane.width, out->plane.height, out->plane.pose.position.x, out->plane.pose.position.y,
+             out->plane.pose.position.z);
+    }
+    return true;
 }
 
 // The party layer for the pair being drawn (see the section comment): its
@@ -2538,6 +2692,7 @@ void BeginStereoPair() {
         LOGI("Room view %s", room ? "on" : "off");
     }
     gXr.pairRoom = room;
+    gRoomViewActive = room;
     PatchHud(room);
 }
 
@@ -2627,7 +2782,13 @@ extern "C" void port_xr_note_hud(const void* list, void* begin, void* end, int k
 extern "C" void port_xr_anchor_hud_element(const void* elem, int camID, float x, float y, float z, int screenX,
                                            int screenY) {
     std::lock_guard<std::mutex> lock(gHudMutex);
-    gHudAnchors[elem] = { camID, { x, y, z }, { screenX, screenY }, gHudBuild };
+    gHudAnchors[elem] = { camID, { x, y, z }, { screenX, screenY }, gHudBuild, false };
+}
+
+extern "C" void port_xr_anchor_stage_sprite(const void* elem, int camID, float x, float y, float z, int screenX,
+                                            int screenY) {
+    std::lock_guard<std::mutex> lock(gHudMutex);
+    gHudAnchors[elem] = { camID, { x, y, z }, { screenX, screenY }, gHudBuild, true };
 }
 
 extern "C" int port_xr_hud_element_camera(const void* elem) {
@@ -2653,6 +2814,7 @@ extern "C" void port_xr_note_world_sprite(const void* list, void* begin, void* e
     std::memcpy(sprite.world, it->second.world, sizeof(sprite.world));
     sprite.screen[0] = it->second.screen[0];
     sprite.screen[1] = it->second.screen[1];
+    sprite.stageFacing = it->second.stageFacing;
     gSpriteNotes[list].push_back(std::move(sprite));
 }
 
@@ -2705,6 +2867,10 @@ extern "C" void port_xr_frame_main(const void* list) {
     }
 }
 
+extern "C" int port_xr_room_view_active(void) {
+    return gRoomViewActive ? 1 : 0;
+}
+
 extern "C" void port_xr_set_present_rate(int fps) {
     gXr.presentRate = fps;
 }
@@ -2748,7 +2914,11 @@ const std::unordered_map<Mtx*, MtxF>& port_xr_eye_replacements(const std::unorde
     if (eye == 0) {
         gHud.planeValid = false;
         gHud.partyValid = false;
+        gHud.spriteQuads.clear();
     }
+    const XrVector3f head = { 0.5f * (gXr.pairViews[0].pose.position.x + gXr.pairViews[1].pose.position.x),
+                              0.5f * (gXr.pairViews[0].pose.position.y + gXr.pairViews[1].pose.position.y),
+                              0.5f * (gXr.pairViews[0].pose.position.z + gXr.pairViews[1].pose.position.z) };
     RestoreSprites(); // this eye moves them from where the game put them
     std::lock_guard<std::mutex> lock(gCameraMutex);
     for (const auto& [key, cam] : gCameras) {
@@ -2770,8 +2940,16 @@ const std::unordered_map<Mtx*, MtxF>& port_xr_eye_replacements(const std::unorde
             if (RoomEyeMatrix(source, cam, eye, shifted.mf)) {
                 gXr.eyeReplacements[mtx] = shifted;
                 for (const WorldSprite& sprite : gHud.sprites) {
-                    if (sprite.mtx == key) {
-                        ShiftSprite(sprite, source, shifted.mf, cam);
+                    if (sprite.mtx != key) {
+                        continue;
+                    }
+                    if (!gHud.redirect) {
+                        ShiftSprite(sprite, source, shifted.mf, cam); // in the eye images
+                    } else if (eye == 0 && gHud.spriteQuads.size() < (size_t) kMaxSpriteQuads) {
+                        SpriteQuad quad;
+                        if (SpriteQuadFor(sprite, source, cam, head, &quad)) {
+                            gHud.spriteQuads.push_back(quad);
+                        }
                     }
                 }
                 if (check) {

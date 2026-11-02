@@ -1,5 +1,7 @@
 #include "common.h"
 #include "entity.h"
+#include "port/Engine.h"
+#include "port/xr/quest_xr.h"
 
 extern VirtualEntityList bBattleVirtualEntityList;
 extern VirtualEntityList wWorldVirtualEntityList;
@@ -52,6 +54,65 @@ void virtual_entity_list_update(void) {
     }
 }
 
+// Quest room view: virtual entities that only make sense inside the TV
+// frame, like the end-of-battle "Star Points" and "Level Up" banners, which
+// slide in from off screen. With no frame around the room view their whole
+// trip would show, so while the room view is on they are skipped whenever
+// the camera being drawn wouldn't show their position. Marked by entity
+// model index (port_virtual_entity_set_framed); the mark goes with the model.
+#define XR_FRAMED_MAX 8
+static s32 sXrFramedModels[XR_FRAMED_MAX] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+
+void port_virtual_entity_set_framed(VirtualEntity* virtualEntity) {
+    s32 i;
+
+    if (virtualEntity == nullptr || virtualEntity->entityModelIndex < 0) {
+        return;
+    }
+    for (i = 0; i < XR_FRAMED_MAX; i++) {
+        if (sXrFramedModels[i] == virtualEntity->entityModelIndex) {
+            return;
+        }
+    }
+    for (i = 0; i < XR_FRAMED_MAX; i++) {
+        if (sXrFramedModels[i] < 0) {
+            sXrFramedModels[i] = virtualEntity->entityModelIndex;
+            return;
+        }
+    }
+}
+
+static void xr_unframe_model(s32 modelIndex) {
+    s32 i;
+
+    for (i = 0; i < XR_FRAMED_MAX; i++) {
+        if (sXrFramedModels[i] == modelIndex) {
+            sXrFramedModels[i] = -1;
+        }
+    }
+}
+
+static b32 xr_hidden_off_screen(VirtualEntity* virtualEntity) {
+    s32 screenX, screenY, screenZ;
+    s32 i;
+
+    if (!port_xr_room_view_active()) {
+        return false;
+    }
+    for (i = 0; i < XR_FRAMED_MAX; i++) {
+        if (sXrFramedModels[i] == virtualEntity->entityModelIndex) {
+            break;
+        }
+    }
+    if (i == XR_FRAMED_MAX) {
+        return false;
+    }
+    get_screen_coords(gCurrentCamID, virtualEntity->pos.x, virtualEntity->pos.y, virtualEntity->pos.z, &screenX,
+                      &screenY, &screenZ);
+    return screenX < OTRGetRectDimensionFromLeftEdge(0) || screenX > OTRGetRectDimensionFromRightEdge(0) ||
+           screenY < 0 || screenY > SCREEN_HEIGHT;
+}
+
 void virtual_entity_list_render_world(void) {
     Matrix4f translation;
     Matrix4f xRot;
@@ -69,6 +130,9 @@ void virtual_entity_list_render_world(void) {
         virtualEntity = (*gCurrentVirtualEntityListPtr)[i];
         if (virtualEntity != nullptr) {
             if (!(virtualEntity->entityModelIndex < 0 || get_entity_model(virtualEntity->entityModelIndex)->flags & ENTITY_MODEL_FLAG_CAM3)) {
+                if (xr_hidden_off_screen(virtualEntity)) {
+                    continue;
+                }
                 guTranslateF(translation, virtualEntity->pos.x, virtualEntity->pos.y, virtualEntity->pos.z);
                 guRotateF(xRot, virtualEntity->rot.x, 1.0f, 0.0f, 0.0f);
                 guRotateF(yRot, virtualEntity->rot.y, 0.0f, 1.0f, 0.0f);
@@ -221,6 +285,7 @@ API_CALLABLE(CreateVirtualEntity_ALT) {
 API_CALLABLE(DeleteVirtualEntity) {
     VirtualEntity* virtualEntity = (*gCurrentVirtualEntityListPtr)[evt_get_variable(script, *script->ptrReadPos)];
 
+    xr_unframe_model(virtualEntity->entityModelIndex);
     free_entity_model_by_index(virtualEntity->entityModelIndex);
     virtualEntity->entityModelIndex = -1;
     return ApiStatus_DONE2;
@@ -634,6 +699,7 @@ void virtual_entity_set_rotation(s32 index, f32 angleX, f32 angleY, f32 angleZ) 
 void virtual_entity_delete_by_index(s32 index) {
     VirtualEntity* virtualEntity = (*gCurrentVirtualEntityListPtr)[index];
 
+    xr_unframe_model(virtualEntity->entityModelIndex);
     free_entity_model_by_index(virtualEntity->entityModelIndex);
     virtualEntity->entityModelIndex = -1;
 }

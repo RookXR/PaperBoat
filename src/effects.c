@@ -2,6 +2,7 @@
 #include "effects.h"
 #include "ld_addrs.h"
 #include "port/Engine.h"
+#include "port/xr/quest_xr.h"
 
 typedef s8 TlbEntry[0x1000];
 typedef TlbEntry TlbMappablePage[15];
@@ -191,7 +192,23 @@ void render_effects_UI(void) {
                             }
                         }
 
-                        renderUI(effectInstance);
+                        {
+                            // Quest room view: the tattle window's frame goes with its
+                            // close-up (the tattle camera) onto the battle-menu layer;
+                            // other UI effects (damage numbers) stay in the scene.
+                            b32 xrParty = effectInstance->shared->effectIndex == EFFECT_TATTLE_WINDOW;
+                            Gfx* xrBegin = gMainGfxPos;
+
+                            if (xrParty) {
+                                gDPNoOp(gMainGfxPos++);
+                            }
+                            renderUI(effectInstance);
+                            if (xrParty) {
+                                gDPNoOp(gMainGfxPos++);
+                                port_xr_note_hud(gDisplayContext->mainGfx, xrBegin, gMainGfxPos - 1,
+                                                 PORT_XR_HUD_PARTY);
+                            }
+                        }
                         FrameInterpolation_RecordCloseChild();
                     }
                 }

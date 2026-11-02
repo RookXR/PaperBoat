@@ -869,7 +869,16 @@ void btl_draw_enemy_health_bars(void) {
                         HudElemID hid;
                         s32 nextDigitXOffset;
 
+                        // Quest room view: the bar is a world sprite anchored at
+                        // healthBarPos (like the target hand), moved and scaled per eye
+                        // to where that eye sees the point, instead of sitting on the
+                        // panel at the flat game screen's position.
+                        Gfx* xrBar;
+
                         get_screen_coords(CAM_BATTLE, x, y, z, &screenX, &screenY, &screenZ);
+                        port_xr_anchor_stage_sprite(enemy, CAM_BATTLE, x, y, z, screenX, screenY);
+                        xrBar = gMainGfxPos;
+                        gDPNoOp(gMainGfxPos++);
                         screenY += 16;
                         hid = HPBarHID;
                         hud_element_set_render_depth(hid, 10);
@@ -903,6 +912,9 @@ void btl_draw_enemy_health_bars(void) {
                         temp = 25 - temp;
                         btl_draw_prim_quad(168, 0, 0, 255, screenX + 11 - temp, screenY - 7, temp, 1);
                         btl_draw_prim_quad(255, 0, 0, 255, screenX + 11 - temp, screenY - 6, temp, 4);
+                        gDPNoOp(gMainGfxPos++);
+                        port_xr_note_world_sprite(gDisplayContext->mainGfx, xrBar, gMainGfxPos - 1, enemy,
+                                                  &gDisplayContext->camPerspMatrix[CAM_BATTLE]);
                     }
                 }
             }

@@ -3,6 +3,7 @@
 #include "assets/ui.h"
 #include "port/Engine.h"
 #include "port/patches/Patches.h"
+#include "port/xr/quest_xr.h"
 
 #define OVERLAY_RENDER_OFF (-1.0f)
 
@@ -370,7 +371,11 @@ void _render_transition_stencil(u8 stencilType, f32 progress, ScreenOverlay* ove
             if (progress > 170) {
                 v0 = 170;
             }
-            draw_prev_frame_buffer_at_screen_pos(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1, v0);
+            // Quest room view: the overlay is on the picture plane and the previous
+            // frame is an eye image (the other eye's, even), so no motion blur there.
+            if (!port_xr_room_view_active()) {
+                draw_prev_frame_buffer_at_screen_pos(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1, v0);
+            }
             break;
         case OVERLAY_WORLD_DARKNESS:
             gSPDisplayList(gMainGfxPos++, Gfx_LoadStencilTex_BlurryCircle);
@@ -504,6 +509,18 @@ void clear_screen_overlays(void) {
 
 void reset_back_screen_overlay_progress(void) {
     screen_overlay_backProgress = 0;
+}
+
+// Quest room view: whether this layer's overlay draws this frame and belongs on
+// the game camera's picture plane (gfx_draw_frame brackets it as
+// PORT_XR_HUD_PLANE), over the stage like the screen it covers. Not
+// OVERLAY_BLUR: it redraws the previous frame, which is an eye image.
+b32 screen_overlay_on_picture_plane(s32 layer) {
+    s32 type = layer == SCREEN_LAYER_FRONT ? screen_overlay_frontType : screen_overlay_backType;
+    f32 progress = layer == SCREEN_LAYER_FRONT ? screen_overlay_frontProgress : screen_overlay_backProgress;
+
+    return type != OVERLAY_NONE && type != OVERLAY_BLUR && progress != OVERLAY_RENDER_OFF
+           && gGameStatusPtr->context != CONTEXT_PAUSE;
 }
 
 void render_screen_overlay_frontUI(void) {

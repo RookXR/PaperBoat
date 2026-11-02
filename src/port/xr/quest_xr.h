@@ -82,11 +82,18 @@ void port_xr_note_hud_anchor(const void* list, int kind, const float world[3], i
  * reported with port_xr_note_world_sprite (`mtx`: that camera's
  * projection-slot matrix in the display context being built). */
 void port_xr_anchor_hud_element(const void* elem, int camID, float x, float y, float z, int screenX, int screenY);
+/* The same for a sprite that stands on the stage facing its front (enemy HP
+ * bars) instead of turning toward the viewer. */
+void port_xr_anchor_stage_sprite(const void* elem, int camID, float x, float y, float z, int screenX, int screenY);
 int port_xr_hud_element_camera(const void* elem);
 void port_xr_note_world_sprite(const void* list, void* begin, void* end, const void* elem, const void* mtx);
 
 /* Called on the render thread before a frame is drawn, with its main list. */
 void port_xr_frame_main(const void* list);
+
+/* Nonzero while frames are presented as a room view (as of the latest stereo
+ * pair); readable from the game thread. */
+int port_xr_room_view_active(void);
 
 #else
 
@@ -139,6 +146,10 @@ static inline void port_xr_anchor_hud_element(const void* elem, int camID, float
     (void) screenX;
     (void) screenY;
 }
+static inline void port_xr_anchor_stage_sprite(const void* elem, int camID, float x, float y, float z, int screenX,
+                                               int screenY) {
+    port_xr_anchor_hud_element(elem, camID, x, y, z, screenX, screenY);
+}
 static inline int port_xr_hud_element_camera(const void* elem) {
     (void) elem;
     return -1;
@@ -152,6 +163,7 @@ static inline void port_xr_note_world_sprite(const void* list, void* begin, void
     (void) mtx;
 }
 static inline void port_xr_frame_main(const void* list) { (void) list; }
+static inline int port_xr_room_view_active(void) { return 0; }
 #endif
 
 #ifdef __cplusplus

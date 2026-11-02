@@ -204,13 +204,35 @@ void gfx_task_background(void) {
 // camera's picture plane so they sit over the speaker. Ranges may nest
 // (the inner one returns to the outer one's layer). Left in the eye images: the
 // interact prompts and UI effects (3D, drawn at world positions, e.g. damage
-// numbers), screen overlays (fades, wipes) and curtains.
+// numbers) and the motion-blur overlay. Screen overlays (fades, wipes) go on the
+// picture plane too, like the screen they cover; the theater (curtains) on the
+// panel, around the file select's windows.
 #define XR_HUD_BEGIN(name)     \
     Gfx* name = gMainGfxPos; \
     gDPNoOp(gMainGfxPos++)
 #define XR_HUD_END(name, kind) \
     gDPNoOp(gMainGfxPos++);  \
     port_xr_note_hud(gDisplayContext->mainGfx, name, gMainGfxPos - 1, kind)
+
+b32 screen_overlay_on_picture_plane(s32 layer);
+
+// A screen overlay layer, bracketed for the picture plane when it draws there.
+static void xr_render_screen_overlay(s32 layer) {
+    b32 onPlane = screen_overlay_on_picture_plane(layer);
+    Gfx* begin = gMainGfxPos;
+
+    if (onPlane) {
+        gDPNoOp(gMainGfxPos++);
+    }
+    if (layer == SCREEN_LAYER_FRONT) {
+        render_screen_overlay_frontUI();
+    } else {
+        render_screen_overlay_backUI();
+    }
+    if (onPlane) {
+        XR_HUD_END(begin, PORT_XR_HUD_PLANE);
+    }
+}
 
 void gfx_draw_frame(void) {
     profiler_gfx_started();
@@ -251,7 +273,7 @@ void gfx_draw_frame(void) {
 
     GFX_PROFILER_SWITCH(PROFILER_TIME_SUB_GFX_HUD_ELEMENTS, PROFILER_TIME_SUB_GFX_BACK_UI);
     FrameInterpolation_RecordOpenChild("gfx_back_ui", 0);
-    render_screen_overlay_backUI();
+    xr_render_screen_overlay(SCREEN_LAYER_BACK);
     XR_HUD_BEGIN(xrHudBack);
     render_workers_backUI();
     render_hud_elements_backUI();
@@ -295,7 +317,7 @@ void gfx_draw_frame(void) {
     render_workers_frontUI();
     render_hud_elements_frontUI();
     XR_HUD_END(xrHudFront, PORT_XR_HUD_PANEL);
-    render_screen_overlay_frontUI();
+    xr_render_screen_overlay(SCREEN_LAYER_FRONT);
     FrameInterpolation_RecordCloseChild();
 
     FrameInterpolation_RecordOpenChild("gfx_messages_front", 0);
@@ -309,7 +331,9 @@ void gfx_draw_frame(void) {
     FrameInterpolation_RecordCloseChild();
 
     FrameInterpolation_RecordOpenChild("gfx_curtains", 0);
+    XR_HUD_BEGIN(xrHudCurtains);
     render_curtains();
+    XR_HUD_END(xrHudCurtains, PORT_XR_HUD_PANEL);
     FrameInterpolation_RecordCloseChild();
 
     FrameInterpolation_RecordOpenChild("gfx_messages_over_curtains", 0);

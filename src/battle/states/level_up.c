@@ -336,9 +336,17 @@ API_CALLABLE(AwaitBattleRewardsDone) {
     }
 }
 
+// Quest room view: the banners slide in from off screen; show them only where
+// the game camera would (src/evt/virtual_entity.c).
+void port_virtual_entity_set_framed(VirtualEntity* virtualEntity);
+
 API_CALLABLE(InitStarPointModelFlags) {
     EntityModel* model;
+    s32 i;
 
+    for (i = 6; i <= 9; i++) {
+        port_virtual_entity_set_framed(virtual_entity_get_by_index(script->varTable[i]));
+    }
     model = get_entity_model(*virtual_entity_get_by_index(script->varTable[6]));
     model->flags &= ~MODEL_FLAGS_MASK_FFF0 ;
     model->flags |= MODEL_FLAG_TRANSFORM_GROUP_MEMBER;
@@ -357,6 +365,8 @@ API_CALLABLE(InitStarPointModelFlags) {
 
 API_CALLABLE(InitLevelUpModelFlags) {
     EntityModel* model = get_entity_model(*virtual_entity_get_by_index(script->varTable[9]));
+
+    port_virtual_entity_set_framed(virtual_entity_get_by_index(script->varTable[9]));
     model->flags &= ~MODEL_FLAGS_MASK_FFF0;
     model->flags |= MODEL_FLAG_TRANSFORM_GROUP_MEMBER;
 
