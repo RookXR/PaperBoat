@@ -182,6 +182,10 @@ struct InputActions {
 struct CameraNote {
     float eye[3];
     float at[3];
+    // The same camera's previous game tick (interpolated presents lie between).
+    bool hasPrev = false;
+    float prevEye[3] = {};
+    float prevAt[3] = {};
     // The camera's viewport in native 320x240 pixels (left, top, right, bottom).
     float viewport[4];
 };
@@ -226,6 +230,9 @@ struct QuestXr {
     // The scene image's opacity for the pair being drawn: below 1 during a
     // screen transition in the room view (port_xr_note_scene_fade).
     float sceneOpacity = 1.0f;
+    // Where the present being drawn lies between the last two game ticks
+    // (port_xr_set_present_fraction; 1 = the tick itself).
+    float presentFraction = 1.0f;
     GLuint loggedCopyTexture = 0;
 
     // Passthrough (XR_FB_passthrough): created once when first wanted, then
@@ -479,16 +486,18 @@ void RequestRefreshRate() {
         offered += std::to_string(rate) + " ";
     }
     LOGI("Display refresh rates offered: %s", offered.c_str());
-    // Runtimes report rates such as 119.99, so compare with a tolerance.
+    // gXrFps 90 runs the display at 90 Hz (one present per refresh), the other
+    // rates at 120 Hz. Runtimes report rates such as 119.99: compare with a tolerance.
+    const float wanted = CVarGetInteger("gXrFps", 90) == 90 ? 90.0f : 120.0f;
     for (float rate : rates) {
-        if (std::fabs(rate - 120.0f) < 0.5f) {
+        if (std::fabs(rate - wanted) < 0.5f) {
             if (Ok(requestRate(gXr.session, rate), "xrRequestDisplayRefreshRateFB")) {
                 LOGI("Display refresh rate %.2f Hz requested", rate);
             }
             return;
         }
     }
-    LOGI("120 Hz unavailable; keeping runtime default refresh rate");
+    LOGI("%.0f Hz unavailable; keeping runtime default refresh rate", wanted);
 }
 
 // Ask MainActivity to pin SDL's surface to the render size. The surface change
@@ -2112,6 +2121,41 @@ void WriteHudBrackets(bool redirect) {
     }
 }
 
+// The UI layers come out the same for both eyes, so only the left eye's pass
+// draws them: for the right eye every outermost UI range, and every world
+// sprite outside one, branches past its commands (each framebuffer switch
+// costs a full tile store/load on the Quest's GPU). In a range that holds 3D
+// drawn back into the eye images (port_xr_note_scene_range) the right eye
+// jumps from one such piece to the next: begin -> piece, piece end -> next
+// piece (or the range's end).
+void SkipHudForSecondEye() {
+    for (const HudRange& range : gHud.ranges) {
+        if (range.parent >= 0) {
+            continue;
+        }
+        std::vector<const HudRange*> scenes;
+        for (const HudRange& scene : gHud.sceneRanges) {
+            if (scene.begin > range.begin && scene.end < range.end) {
+                scenes.push_back(&scene);
+            }
+        }
+        std::sort(scenes.begin(), scenes.end(), [](const HudRange* a, const HudRange* b) { return a->begin < b->begin; });
+        Fast::F3DGfx* from = range.begin;
+        for (const HudRange* scene : scenes) {
+            BranchTo(from, scene->begin); // scene->begin stays G_RESETFB: into the eye image
+            from = scene->end;
+        }
+        BranchTo(from, range.end);
+        NoOp(range.end);
+    }
+    for (const WorldSprite& sprite : gHud.sprites) {
+        if (sprite.kind < 0) {
+            BranchTo(sprite.begin, sprite.end);
+            NoOp(sprite.end);
+        }
+    }
+}
+
 // Puts the world sprites' commands back as the game built them.
 void RestoreSprites() {
     for (const WorldSprite& sprite : gHud.sprites) {
@@ -2833,7 +2877,7 @@ bool Initialize() {
 } // namespace
 
 extern "C" void port_xr_note_camera(const void* mtx, const float eye[3], const float at[3], const short vpScale[4],
-                                    const short vpTrans[4]) {
+                                    const short vpTrans[4], int camID) {
     CameraNote note;
     std::memcpy(note.eye, eye, sizeof(note.eye));
     std::memcpy(note.at, at, sizeof(note.at));
@@ -2845,6 +2889,15 @@ extern "C" void port_xr_note_camera(const void* mtx, const float eye[3], const f
     note.viewport[2] = cx + halfW;
     note.viewport[3] = cy + halfH;
     std::lock_guard<std::mutex> lock(gCameraMutex);
+    // The previous tick of the same camera (the display contexts alternate, so
+    // its matrix is another Mtx): what interpolated presents start from.
+    static std::unordered_map<int, CameraNote> sLastById;
+    if (auto last = sLastById.find(camID); last != sLastById.end()) {
+        note.hasPrev = true;
+        std::memcpy(note.prevEye, last->second.eye, sizeof(note.prevEye));
+        std::memcpy(note.prevAt, last->second.at, sizeof(note.prevAt));
+    }
+    sLastById[camID] = note;
     gCameras[mtx] = note;
 }
 
@@ -3024,6 +3077,10 @@ extern "C" int port_xr_room_view_active(void) {
     return gRoomViewActive ? 1 : 0;
 }
 
+extern "C" void port_xr_set_present_fraction(float fraction) {
+    gXr.presentFraction = fraction;
+}
+
 extern "C" void port_xr_set_present_rate(int fps) {
     gXr.presentRate = fps;
 }
@@ -3037,8 +3094,11 @@ extern "C" void port_xr_set_eye(int eye) {
     if (eye == 0) {
         BeginStereoPair();
     }
-    if (eye >= 0 && gHud.redirect) {
-        ClearHudTextures(); // both eyes draw the UI; blending must not stack
+    if (eye == 0 && gHud.redirect) {
+        ClearHudTextures();
+    }
+    if (eye == 1 && gHud.redirect) {
+        SkipHudForSecondEye();
     }
     if (eye < 0) {
         // Pair done: later draws of this list (flat presents) draw the UI as built.
@@ -3053,6 +3113,62 @@ extern "C" void port_xr_set_eye(int eye) {
 
 extern "C" int port_xr_stereo_active(void) {
     return gXr.mode == Mode::Active && gXr.running && CVarGetInteger(kStereoCVar, 1) != 0;
+}
+
+// The camera as of this present: the noted eye/at are the game tick's (30 Hz),
+// but between ticks the matrix is interpolated, and the room view must move
+// with it or the follow-camera mapping steps while interpolated objects glide
+// (Mario judders against the room at 120 fps). From matrix m (clip = [world 1]*m,
+// view x perspective): the eye is the point with clip x = y = w = 0, the view
+// direction the gradient of w; `at` lies along it at the focus distance
+// interpolated between the previous tick and this one (the battle camera zooms
+// by changing it: a stepped distance pumped the stage in and out).
+bool CameraFromMatrix(const float m[4][4], const CameraNote& noted, CameraNote* out) {
+    const int cols[3] = { 0, 1, 3 };
+    double a[3][3], b[3];
+    for (int r = 0; r < 3; r++) {
+        for (int i = 0; i < 3; i++) {
+            a[r][i] = m[i][cols[r]];
+        }
+        b[r] = -(double) m[3][cols[r]];
+    }
+    auto det3 = [](const double x[3][3]) {
+        return x[0][0] * (x[1][1] * x[2][2] - x[1][2] * x[2][1]) - x[0][1] * (x[1][0] * x[2][2] - x[1][2] * x[2][0]) +
+               x[0][2] * (x[1][0] * x[2][1] - x[1][1] * x[2][0]);
+    };
+    const double det = det3(a);
+    if (std::fabs(det) < 1e-12) {
+        return false;
+    }
+    double eye[3];
+    for (int i = 0; i < 3; i++) { // Cramer's rule
+        double ai[3][3];
+        std::memcpy(ai, a, sizeof(ai));
+        for (int r = 0; r < 3; r++) {
+            ai[r][i] = b[r];
+        }
+        eye[i] = det3(ai) / det;
+    }
+    const double f[3] = { m[0][3], m[1][3], m[2][3] };
+    const double fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+    const double distNow = Distance(noted.eye, noted.at);
+    const double distPrev = noted.hasPrev ? Distance(noted.prevEye, noted.prevAt) : distNow;
+    const double t = std::clamp((double) gXr.presentFraction, 0.0, 1.0);
+    const double dist = distPrev + t * (distNow - distPrev);
+    if (fl < 1e-12 || dist <= 0.0) {
+        return false;
+    }
+    // Sanity: an interpolated camera stays near the tick's (else keep the note).
+    const double dx = eye[0] - noted.eye[0], dy = eye[1] - noted.eye[1], dz = eye[2] - noted.eye[2];
+    if (std::sqrt(dx * dx + dy * dy + dz * dz) > std::max(distNow, distPrev)) {
+        return false;
+    }
+    *out = noted;
+    for (int i = 0; i < 3; i++) {
+        out->eye[i] = (float) eye[i];
+        out->at[i] = (float) (eye[i] + dist * f[i] / fl);
+    }
+    return true;
 }
 
 const std::unordered_map<Mtx*, MtxF>& port_xr_eye_replacements(const std::unordered_map<Mtx*, MtxF>& base, int eye) {
@@ -3076,7 +3192,7 @@ const std::unordered_map<Mtx*, MtxF>& port_xr_eye_replacements(const std::unorde
                               0.5f * (gXr.pairViews[0].pose.position.z + gXr.pairViews[1].pose.position.z) };
     RestoreSprites(); // this eye moves them from where the game put them
     std::lock_guard<std::mutex> lock(gCameraMutex);
-    for (const auto& [key, cam] : gCameras) {
+    for (const auto& [key, noted] : gCameras) {
         Mtx* mtx = const_cast<Mtx*>(static_cast<const Mtx*>(key));
         // Shift the matrix this present would otherwise show: the
         // interpolated value when there is one, else game memory.
@@ -3085,6 +3201,10 @@ const std::unordered_map<Mtx*, MtxF>& port_xr_eye_replacements(const std::unorde
             std::memcpy(source, lerped->second.mf, sizeof(source));
         } else {
             DecodeMtx(mtx, source);
+        }
+        CameraNote cam = noted;
+        if (room) {
+            CameraFromMatrix(source, noted, &cam); // follow the interpolated camera
         }
         if (room && eye == 0 && key == gHud.camMtx) {
             gHud.planeValid = HudPlaneFromCamera(source, cam);

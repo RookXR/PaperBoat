@@ -1016,6 +1016,17 @@ void GameEngine::StartFrame() const {
 }
 
 uint32_t GameEngine::GetInterpolationFPS() {
+#ifdef PAPERBOAT_QUEST_XR
+    // Quest: the headset's display clock paces presents (120 Hz), and every
+    // interpolated present is a new stereo pair from a fresh head pose, so head
+    // movement in the room view is smooth. gXrFps: 30, 60, 90 or 120 (90 runs the
+    // display at 90 Hz, the others at 120); the game's own setting and SDL's
+    // refresh rate don't apply.
+    {
+        const int fps = CVarGetInteger("gXrFps", 90);
+        return fps >= 120 ? 120 : fps >= 90 ? 90 : fps >= 60 ? 60 : 30;
+    }
+#endif
     if (CVarGetInteger(CVAR_SETTING("MatchRefreshRate"), 0)) {
         return Ship::Context::GetRawInstance()->GetWindow()->GetCurrentRefreshRate();
     }
@@ -1099,6 +1110,7 @@ void GameEngine::RunCommands(Gfx* Commands, const std::vector<std::unordered_map
         // matrices; the right eye's swap submits the pair as one XR frame
         // (src/port/xr/quest_xr.cpp).
         if (port_xr_stereo_active()) {
+            port_xr_set_present_fraction((float) (i + 1) / (float) mtx_replacements.size());
             for (int eye = 0; eye < 2; eye++) {
                 port_xr_set_eye(eye);
                 wnd->DrawAndRunGraphicsCommands(Commands, port_xr_eye_replacements(mtx_replacements[i], eye), {});

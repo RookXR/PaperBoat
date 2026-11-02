@@ -67,9 +67,8 @@ table in `README.md`.
 - [ ] **Fixed "dollhouse" camera per map** as a toggle (owner's choice "both"):
       camera fixed on the map's bounds so the area stands still on the table and
       Mario walks inside it; fallback to follow for maps that don't fit.
-- [ ] Smoothness: 30 fps means head translation judders between presents
-      (rotation-only reprojection). BattleShip fixed it with 120 fps frame
-      interpolation + `XR_EXT_performance_settings`. Not yet reported by the owner.
+- [x] Smoothness (2026-11-01): 90 fps interpolation at 90 Hz (`gXrFps`); room
+      mapping follows the interpolated camera. Owner: "just as smooth" as 120.
 - [ ] Sharpness: the 16:9 render target wastes ~half its pixels on the widened fov
       (`L eye fov x -2.40..1.86`). BattleShip: eye-shaped render target +
       `LUS_WIDESCREEN_ALLOW_NARROW`.

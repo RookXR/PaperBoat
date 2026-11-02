@@ -189,3 +189,10 @@ behind the battle-menu/star-point screens (seen from the head) are submitted bef
 those layers. **Why:** owner: Danger marker "floats randomly in that HUD panel",
 then (placed) "renders through the battle menu"; quads have no mutual depth test.
 Owner on the fix: "fantastic … fixed both the health bars and the danger status".
+
+### 2026-11-01 — 90 fps at 90 Hz
+
+Frame interpolation in the Quest build is driven by `gXrFps` (default 90), not the
+game's `InterpolationFPS`, and 90 runs the display at 90 Hz. **Why:** at 120 the GPU
+sat at 91 % (top clock) and battles dropped to 93–118 presents/s (translation
+judder); at 90: 90.00/s, GPU 70 %. Owner: 90 "seems just as smooth to me as 120".

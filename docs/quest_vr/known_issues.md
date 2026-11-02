@@ -142,3 +142,10 @@ drawn room-projected into the panel framebuffer. Now bracketed back into the sce
 Status icons were placed from `get_screen_coords` onto the steady panel; now world
 sprites. All sprite quads were submitted last, so a marker behind the battle menu
 showed through it; now ordered by which side of the stage-front plane they are on.
+
+### 2026-11-01 — Mario blurry / stage pumping at 90–120 fps
+The room mapping used the camera's noted eye/at (30 Hz ticks) while the matrix was
+interpolated: objects glided against a stepped mapping (Mario "blurry"), and in
+battle the stepped focus distance (the battle camera zooms with it) moved the room
+anchor back and forth ("the stage zooming in and out rapidly"). Fixed by
+`CameraFromMatrix` with the focus distance interpolated by the present's fraction.

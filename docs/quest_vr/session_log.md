@@ -156,5 +156,12 @@ if wanted; then the dollhouse camera (`open_tasks.md`).
   (compositor quads don't depth-test). Owner: "fantastic", fixed for HP bars and the
   Danger marker.
 
+- Frame rate: `gXrFps` (Quest override of the interpolation rate). 120: smooth head
+  motion, but Mario blurred (room mapping stepped at 30 Hz while the matrix was
+  interpolated) and battles pumped (stepped focus distance) and dropped frames (GPU
+  91 % at level 4). Fixed the camera (`CameraFromMatrix` + present fraction), UI
+  drawn in one eye's pass only, and settled on 90 fps at 90 Hz: 90.00 presents/s,
+  GPU 70 %. Owner: "much better … just as smooth".
+
 **Next:** level-up banner when the owner levels up; `OVERLAY_BLUR` per-eye; the
 sprite budget if markers go missing; then the dollhouse camera (`open_tasks.md`).

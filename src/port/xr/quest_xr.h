@@ -18,7 +18,11 @@ extern "C" {
  * replaces that matrix per eye at draw time (perspective matrices only; ortho
  * ones are left alone). */
 void port_xr_note_camera(const void* mtx, const float eye[3], const float at[3], const short vpScale[4],
-                         const short vpTrans[4]);
+                         const short vpTrans[4], int camID);
+
+/* Where the next present lies between the previous game tick and the current
+ * one (1 = the tick itself; interpolated presents are below 1). */
+void port_xr_set_present_fraction(float fraction);
 
 /* The render loop's present rate (presents per second), set every frame. */
 void port_xr_set_present_rate(int fps);
@@ -109,7 +113,8 @@ int port_xr_room_view_active(void);
 #else
 
 static inline void port_xr_note_camera(const void* mtx, const float eye[3], const float at[3],
-                                       const short vpScale[4], const short vpTrans[4]) {
+                                       const short vpScale[4], const short vpTrans[4], int camID) {
+    (void) camID;
     (void) mtx;
     (void) eye;
     (void) at;
@@ -117,6 +122,7 @@ static inline void port_xr_note_camera(const void* mtx, const float eye[3], cons
     (void) vpTrans;
 }
 static inline void port_xr_set_present_rate(int fps) { (void) fps; }
+static inline void port_xr_set_present_fraction(float fraction) { (void) fraction; }
 static inline int port_xr_paces_frames(void) { return 0; }
 static inline int port_xr_stereo_active(void) { return 0; }
 static inline void port_xr_set_eye(int eye) { (void) eye; }

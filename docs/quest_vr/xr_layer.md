@@ -39,6 +39,16 @@ How the Quest build's VR code fits together as of 2026-11-01 (Phases 2, 3a, 3p,
    underlay, then a projection layer (room) or one quad per eye (window),
    alpha-blended when the image is a cut-out.
 
+Frame rate: the game ticks at 30 Hz; with `gXrFps` 90 each tick is drawn as three
+interpolated presents (`RunCommands` passes each one's fraction,
+`port_xr_set_present_fraction`), each a new stereo pair from a fresh head pose. The
+room mapping follows the interpolated camera (`CameraFromMatrix`: eye from the
+interpolated matrix, focus distance interpolated between the camera's previous and
+current notes, kept per camera id). The UI layers and sprites are drawn in the left
+eye's pass only (`SkipHudForSecondEye`). Measured 2026-11-01: 90.00 presents/s
+(87–89 with a few resyncs in battle), GPU 70 % at level 2; 120 had GPU 91 % at level
+4 and dropped to 93–118/s.
+
 Facts that cost time:
 - This libultraship's game FB texture has the **GL bottom-left origin** (no v flip
   in the copy shader). BattleShip's needed a flip.
@@ -57,6 +67,7 @@ Facts that cost time:
 
 | CVar | Default | Meaning |
 |------|---------|---------|
+| `gXrFps` | 90 | presents/s (30/60/90/120): overrides `InterpolationFPS` in the Quest build (`GameEngine::GetInterpolationFPS`); 90 also requests a 90 Hz display, the others 120 Hz. Read at launch |
 | `gXrStereo` | 1 | 0 = flat (one image to both eyes); first A/B when stereo renders wrong |
 | `gXrStereoSeparation` / `gXrStereoConvergence` | 0.01 / 0.85 | window stereo only |
 | `gXrStereoSwapEyes` | 0 | debug |
