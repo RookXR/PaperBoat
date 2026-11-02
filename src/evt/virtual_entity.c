@@ -58,8 +58,12 @@ void virtual_entity_list_update(void) {
 // frame, like the end-of-battle "Star Points" and "Level Up" banners, which
 // slide in from off screen. With no frame around the room view their whole
 // trip would show, so while the room view is on they are skipped whenever
-// the camera being drawn wouldn't show their position. Marked by entity
-// model index (port_virtual_entity_set_framed); the mark goes with the model.
+// the frame camera wouldn't show their position. They are HUD-camera models
+// (ENTITY_MODEL_FLAG_CAM3), drawn in the back-UI pass with the battle camera's
+// projection: that pass is on the steady panel, so their draw is bracketed
+// back into the scene (port_xr_note_scene_range), where the room matrices
+// put them at their world position. Marked by entity model index
+// (port_virtual_entity_set_framed); the mark goes with the model.
 #define XR_FRAMED_MAX 8
 static s32 sXrFramedModels[XR_FRAMED_MAX] = { -1, -1, -1, -1, -1, -1, -1, -1 };
 
@@ -92,22 +96,24 @@ static void xr_unframe_model(s32 modelIndex) {
     }
 }
 
-static b32 xr_hidden_off_screen(VirtualEntity* virtualEntity) {
-    s32 screenX, screenY, screenZ;
+static b32 xr_is_framed(VirtualEntity* virtualEntity) {
     s32 i;
 
-    if (!port_xr_room_view_active()) {
-        return false;
-    }
     for (i = 0; i < XR_FRAMED_MAX; i++) {
-        if (sXrFramedModels[i] == virtualEntity->entityModelIndex) {
-            break;
+        if (sXrFramedModels[i] >= 0 && sXrFramedModels[i] == virtualEntity->entityModelIndex) {
+            return true;
         }
     }
-    if (i == XR_FRAMED_MAX) {
+    return false;
+}
+
+static b32 xr_hidden_off_screen(VirtualEntity* virtualEntity) {
+    s32 screenX, screenY, screenZ;
+
+    if (!port_xr_room_view_active() || !xr_is_framed(virtualEntity)) {
         return false;
     }
-    get_screen_coords(gCurrentCamID, virtualEntity->pos.x, virtualEntity->pos.y, virtualEntity->pos.z, &screenX,
+    get_screen_coords(gCurrentCameraID, virtualEntity->pos.x, virtualEntity->pos.y, virtualEntity->pos.z, &screenX,
                       &screenY, &screenZ);
     return screenX < OTRGetRectDimensionFromLeftEdge(0) || screenX > OTRGetRectDimensionFromRightEdge(0) ||
            screenY < 0 || screenY > SCREEN_HEIGHT;
@@ -166,6 +172,15 @@ void virtual_entity_list_render_UI(void) {
         virtualEntity = (*gCurrentVirtualEntityListPtr)[i];
         if (virtualEntity != nullptr) {
             if (!(virtualEntity->entityModelIndex < 0 || !(get_entity_model(virtualEntity->entityModelIndex)->flags & ENTITY_MODEL_FLAG_CAM3))) {
+                b32 xrScene = xr_is_framed(virtualEntity);
+                Gfx* xrBegin = gMainGfxPos;
+
+                if (xr_hidden_off_screen(virtualEntity)) {
+                    continue;
+                }
+                if (xrScene) {
+                    gDPNoOp(gMainGfxPos++);
+                }
                 guTranslateF(translation, virtualEntity->pos.x, virtualEntity->pos.y, virtualEntity->pos.z);
                 guRotateF(xRot, virtualEntity->rot.x, 1.0f, 0.0f, 0.0f);
                 guRotateF(yRot, virtualEntity->rot.y, 0.0f, 1.0f, 0.0f);
@@ -177,6 +192,10 @@ void virtual_entity_list_render_UI(void) {
                 guMtxCatF(temp, translation, transform);
                 guMtxF2L(transform, &transformMtxL);
                 draw_entity_model_E(virtualEntity->entityModelIndex, &transformMtxL);
+                if (xrScene) {
+                    gDPNoOp(gMainGfxPos++);
+                    port_xr_note_scene_range(gDisplayContext->mainGfx, xrBegin, gMainGfxPos - 1);
+                }
             }
         }
     }

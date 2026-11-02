@@ -64,11 +64,13 @@ void port_xr_frame_background(const void* list);
 #define PORT_XR_HUD_PANEL 0 /* fixed UI: a steady panel above the scene */
 #define PORT_XR_HUD_PLANE 1 /* messages: the game camera's picture plane, over the speaker */
 #define PORT_XR_HUD_PARTY 2 /* battle menus: at the stage's front left (needs an anchor) */
+#define PORT_XR_HUD_STAGE 3 /* battle star points: at the stage's front right, the menus' mirror (needs an anchor) */
 void port_xr_hud_frame_start(const void* list, const void* camMtx);
 void port_xr_note_hud(const void* list, void* begin, void* end, int kind);
 /* Places a layer by a world point: `world` (frame camera's world space) and
  * where the game shows it on screen (native px); the layer keeps its screen
- * layout around that point at a constant scale. Needed for PORT_XR_HUD_PARTY. */
+ * layout around that point at a constant scale. Needed for PORT_XR_HUD_PARTY
+ * and PORT_XR_HUD_STAGE. */
 void port_xr_note_hud_anchor(const void* list, int kind, const float world[3], int screenX, int screenY);
 
 /* World-anchored UI elements (the battle target hand). The game places them
@@ -90,6 +92,10 @@ int port_xr_hud_element_camera(const void* elem);
  * (0..1) of the screen: in the room view it is skipped and the scene fades
  * into the room by that much instead. */
 void port_xr_note_scene_fade(const void* list, void* begin, void* end, float coverage);
+/* 3D drawn inside a UI pass (HUD-camera models such as the star-point banner)
+ * between two no-ops: in the room view it goes back into the scene (the eye
+ * images, room matrices) instead of the UI layer around it. */
+void port_xr_note_scene_range(const void* list, void* begin, void* end);
 void port_xr_note_world_sprite(const void* list, void* begin, void* end, const void* elem, const void* mtx);
 
 /* Called on the render thread before a frame is drawn, with its main list. */
@@ -98,6 +104,7 @@ void port_xr_frame_main(const void* list);
 /* Nonzero while frames are presented as a room view (as of the latest stereo
  * pair); readable from the game thread. */
 int port_xr_room_view_active(void);
+
 
 #else
 
@@ -126,6 +133,7 @@ static inline void port_xr_hud_frame_start(const void* list, const void* camMtx)
 #define PORT_XR_HUD_PANEL 0
 #define PORT_XR_HUD_PLANE 1
 #define PORT_XR_HUD_PARTY 2
+#define PORT_XR_HUD_STAGE 3
 static inline void port_xr_note_hud_anchor(const void* list, int kind, const float world[3], int screenX,
                                            int screenY) {
     (void) list;
@@ -157,6 +165,11 @@ static inline void port_xr_anchor_stage_sprite(const void* elem, int camID, floa
 static inline int port_xr_hud_element_camera(const void* elem) {
     (void) elem;
     return -1;
+}
+static inline void port_xr_note_scene_range(const void* list, void* begin, void* end) {
+    (void) list;
+    (void) begin;
+    (void) end;
 }
 static inline void port_xr_note_scene_fade(const void* list, void* begin, void* end, float coverage) {
     (void) list;

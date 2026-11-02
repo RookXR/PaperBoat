@@ -126,3 +126,10 @@ Both are now world-sprite quads (`xr_layer.md`).
 Transitions on the picture plane covered only the game camera's frame, so the
 scene around the box stayed visible (owner: "a little jarring"). Front-layer
 transitions now skip the overlay and fade the scene image into the room.
+
+### 2026-11-01 — Star-point banner zoomed across the HUD panel
+The banners' entity models carry `ENTITY_MODEL_FLAG_CAM3`, so they are drawn by
+`virtual_entity_list_render_UI` (back-UI worker, inside the panel range), not by the
+world pass where the first off-screen check was added (a diagnostic log of that check
+never fired). Their projection is the battle camera's, replaced per eye, so they were
+drawn room-projected into the panel framebuffer. Now bracketed back into the scene.

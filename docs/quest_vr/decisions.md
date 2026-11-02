@@ -164,3 +164,20 @@ so the world fades out to the passthrough room and back in. Wipe shapes and fade
 colors are dropped; UI layers stay up. **Why:** the overlay on the picture plane
 left the scene visible around a box; owner: "looks perfect and is so much better",
 fine with the status bar staying up.
+
+### 2026-11-01 — Star points at the stage's front right
+
+The star-point counter gets its own layer (`PORT_XR_HUD_STAGE`), the battle-menu
+layer's mirror image: same scale and height, anchored at the stage's front right,
+8 cm further in than the mirrored menu offset (`gXrHudStageRight` -0.23 m).
+**Why:** owner asked for it "on the opposite side of the stage from the battle
+menu"; the 8 cm came from the first try on device. The end-of-battle tally moves
+the counter toward the screen's middle on that layer.
+
+### 2026-11-01 — End-of-battle banners are part of the scene
+
+The "N Star Points" / "Level Up" banners are 3D HUD-camera models; they are drawn
+back into the eye images with the room matrices (a 3D sign at their world
+position), not on a UI layer. **Why:** drawn in the back-UI pass they landed,
+room-projected, on the panel ("zooms in, very small on the HUD panel"); owner on
+the fix: "looks fantastic".

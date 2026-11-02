@@ -71,6 +71,7 @@ Facts that cost time:
 | `gXrHudPartyWidth` | 1.28 m | battle-menu layer: width the 16:9 screen has on it |
 | `gXrHudPartyRight` / `Up` / `Back` | 0.15 / -0.03 / 0 m | battle-menu layer: offset from its stage anchor (tuned with the owner) |
 | `gXrHudPartyTilt` | 0° | battle-menu layer: lean back from vertical |
+| `gXrHudStageRight` | -0.23 m | star-point layer (the battle-menu layer's mirror at the stage's front right): offset across from its anchor (negative = toward the center); width/up/back/tilt are the party layer's |
 | `gXrHudScale` | 1 | picture plane (speech bubbles) shrunk about the look-at point; 1 = exact alignment |
 | `gXrHudSpriteScale` | 1 | world sprites (target hand): size multiplier on top of the game's size against the scene |
 | `gXrHudBacking` | 0 | debug: alpha of a black card behind every UI layer |
@@ -117,13 +118,13 @@ range's framebuffer. What goes where:
 | `CAM_TATTLE` render (`render_frame` loop) and the `EFFECT_TATTLE_WINDOW` UI effect | `PORT_XR_HUD_PARTY` | tattle close-up in its frame on the battle-menu layer |
 | interact prompts, other `render_effects_UI` (damage numbers), `OVERLAY_BLUR` | none | stay in the eye images: 3D objects at world positions (room matrices); the blur samples an eye image |
 
-**Framebuffers.** Four Fast3D framebuffers (the three layers + world sprites), `CreateFrameBuffer(320, 240, 320, 240,
+**Framebuffers.** Five Fast3D framebuffers (panel, plane, party, stage + world sprites), `CreateFrameBuffer(320, 240, 320, 240,
 resize=1)`: storage follows the game framebuffer (1920×1080) and the layout is the
 game screen's, full 16:9 width (this port stretches the status bar to the widescreen
 edges; a 4:3 crop cut off the coins). Kept non-inverted every pair
 (`KeepHudUpright`, see `known_issues.md`). Cleared to (0,0,0,0) before each eye
 (both eyes draw them). On the right eye's swap `CopyHudImage` copies them into
-quarters of one 1280×2880 swapchain; `EndFrame` adds one quad per layer after the
+fifths of one 1280×3600 swapchain; `EndFrame` adds one quad per layer after the
 projection layer, then the sprite quads (premultiplied alpha; quads always draw
 over the scene).
 
@@ -142,9 +143,17 @@ sprites). Log: `Sprite quad: anchor … box … -> w x h m at …` (~10 s). With
 `gXrHud` 0 the old per-eye path remains (`ShiftSprite`, `TransformSpriteRects`
 moves/scales texrects and fill rects in the eye images).
 
-**Star-point banner:** its virtual entities are marked
-(`port_virtual_entity_set_framed`, `level_up.c`) and skipped in the room view while
-off the game camera's screen (`port_xr_room_view_active`).
+**Star points.** The counter (`btl_update_starpoints_display`, via
+`xr_draw_starpoints`) is bracketed as `PORT_XR_HUD_STAGE`: the party layer's mirror,
+anchored at stage point (260, 0, 60) with the screen's right edge at y 228
+(`HudAnchoredLayer(..., mirrored)`, offset `gXrHudStageRight`). The end-of-battle
+"N Star Points" / "Level Up" banners are HUD-camera entity models
+(`ENTITY_MODEL_FLAG_CAM3`) drawn in the back-UI pass (`virtual_entity_list_render_UI`)
+with the battle camera's projection; their virtual entities are marked
+(`port_virtual_entity_set_framed`, `level_up.c`), their draw is bracketed with
+`port_xr_note_scene_range` (in a room-view pair: `G_RESETFB` into the eye image,
+then back to the enclosing range's framebuffer), so the room matrices put them at
+their world position, and they are skipped while off the frame camera's screen.
 
 **Not handled yet:** other `get_screen_coords` users (status icons, msg_api,
 encounter); `OVERLAY_BLUR` (see `known_issues.md`).

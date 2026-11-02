@@ -425,6 +425,22 @@ void btl_update(void) {
     }
 }
 
+// Quest room view: the star points (the counter at the screen's bottom right)
+// go on the stage layer, the battle menus' mirror image at the stage's front
+// right: the screen's right edge, just below the counter, sits on the floor at
+// that point of the battle world (port_xr_note_hud_anchor).
+static void xr_draw_starpoints(void) {
+    const f32 stageFrontRight[3] = { 260.0f, 0.0f, 60.0f };
+    Gfx* xrStage = gMainGfxPos;
+
+    gDPNoOp(gMainGfxPos++);
+    port_xr_note_hud_anchor(gDisplayContext->mainGfx, PORT_XR_HUD_STAGE, stageFrontRight,
+                            OTRGetRectDimensionFromRightEdge(0), 228);
+    btl_update_starpoints_display();
+    gDPNoOp(gMainGfxPos++);
+    port_xr_note_hud(gDisplayContext->mainGfx, xrStage, gMainGfxPos - 1, PORT_XR_HUD_STAGE);
+}
+
 void btl_draw_ui(void) {
     s32 changed = false;
     s32 state;
@@ -437,7 +453,7 @@ void btl_draw_ui(void) {
     } else {
         switch (state) {
             case BATTLE_STATE_INVALID:
-                btl_update_starpoints_display();
+                xr_draw_starpoints();
                 btl_draw_enemy_health_bars();
                 draw_status_ui();
                 return;
@@ -446,7 +462,7 @@ void btl_draw_ui(void) {
         }
     }
 
-    btl_update_starpoints_display();
+    xr_draw_starpoints();
     btl_draw_enemy_health_bars();
 
     // Quest room view: the battle menus are drawn into the party layer, a

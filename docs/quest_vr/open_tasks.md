@@ -40,12 +40,13 @@ table in `README.md`.
 
 ## Next up — room view polish (owner chose "both, switchable", 2026-11-01)
 
-- [ ] **End-of-battle star-point banner** (owner chose option 1, 2026-11-01): the
-      "N Star Points" banner is 3D virtual entities (`EVS_ShowStarpoints`,
-      `level_up.c`) sliding from x -278 through the middle and out right; with no TV
-      frame the room view shows the whole trip. Implemented (committed 2026-11-01:
-      `port_virtual_entity_set_framed`, skipped while off the game camera's screen
-      in the room view); **not yet confirmed on device by the owner**.
+- [x] **End-of-battle star-point banner** (2026-11-01): drawn in the scene at its
+      world position, hidden while off the frame camera's screen. Owner: "looks
+      fantastic".
+- [ ] **Level-up banner**: same path (`InitLevelUpModelFlags`), not seen yet; check
+      at the owner's next level up.
+- [x] Star-point counter on its own layer at the stage's front right, mirroring the
+      battle menus (2026-11-01).
 - [x] Enemy HP bars as world sprites (2026-11-01): stage-facing quads under each
       enemy. Other `get_screen_coords` UI (status icons, msg_api, encounter) still
       lands on the steady panel at game-screen positions; same treatment if they matter.

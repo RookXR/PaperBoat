@@ -144,5 +144,12 @@ if wanted; then the dollhouse camera (`open_tasks.md`).
   (`port_xr_note_scene_fade`, copy-shader `uOpacity`). Owner: "looks perfect and
   is so much better"; UI staying up during fades is fine.
 
-**Next:** confirm the star-point banner; `OVERLAY_BLUR` per-eye; other
+- Star-point counter on a mirrored "stage" layer at the stage's front right
+  (+8 cm in after the first look). End-of-battle banner: a diagnostic log plus a
+  headset screenshot burst (`adb exec-out screencap` takes ~8 s a frame, too slow
+  for animation) showed the world-pass check never ran: the banner is a HUD-camera
+  model drawn in the back-UI pass; now drawn back into the scene. Owner: "looks
+  fantastic". Level-up banner not seen yet.
+
+**Next:** level-up banner when the owner levels up; `OVERLAY_BLUR` per-eye; other
 `get_screen_coords` UI if it matters; then the dollhouse camera (`open_tasks.md`).
