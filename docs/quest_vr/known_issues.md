@@ -2,10 +2,23 @@
 
 ## Open
 
-### HUD is head-locked and unreadable in the room view
-The HUD and battle menus are screen-space texrects, drawn into each eye's image at
-the same spot: they ride on the face, at the edge of the widened field of view, too
-big/close to read (owner, 2026-11-01). Fix: HUD on its own panel (`open_tasks.md`).
+### Previous-frame blur samples the other eye (room view)
+`port_emitPrevFrameCapture` copies the game framebuffer once at the end of the
+master list, and both eyes draw the same list, so the right eye's
+`draw_prev_frame_buffer` reads the left eye's image (and the left eye the previous
+right). Seen as double vision in the battle swirl (now skipped in the room view).
+`OVERLAY_BLUR` (Kammy Koopa, Mega Quake, `TRANSITION_SLOW_BLUR_MOTION`) still has it.
+
+### Fades cover only the game camera's frame (room view)
+Screen overlays are on the picture plane, so scene parts outside that frame stay
+visible during a fade and can pop when the next map loads; the panel/party layers
+aren't covered either. If no frame camera is noted (e.g. file select, all cameras
+disabled) the plane isn't shown and an overlay drawn then is invisible.
+
+### World sprite boxes can overlap
+Each sprite quad shows its bounding box of the shared sprite framebuffer; if two
+sprites' boxes overlap on the game screen (HP bars of close enemies, the hand over
+a bar) a quad shows a piece of the other. Max 10 sprite quads (compositor layers).
 
 ### 2D map backgrounds sit at screen depth in stereo (window mode only)
 With passthrough and the cut-out (default) there is no backdrop in fields and
@@ -92,3 +105,19 @@ the same mismatch for any game that scissors inside a `G_SETFB` framebuffer.
 created and the UI drew into invalid ids. **Fix:** all slots -1, check all of them.
 Found with the `UI coverage` diagnostic.
 
+
+### 2026-11-01 — Head-locked UI in the room view
+HUD and battle menus were screen-space texrects in the eye images: on the face,
+unreadable. Fixed by Phase 3h (UI framebuffers + layers).
+
+### 2026-11-01 — File-select border, transitions, tattle view head-locked / doubled
+Everything drawn outside the UI brackets stays in the eye images: `render_curtains`
+(the file-select theater), the screen overlays, the tattle camera (its matrix is
+loaded in `tattle_cam_pre_render`, never noted) and its `fx_tattle_window` frame
+(a UI effect). Same pixels in both eyes with asymmetric fovs = head-locked and
+double. Now bracketed onto the panel / picture plane / party layer.
+
+### 2026-11-01 — Hand and HP bars rolled with the head; HP bars floated
+Texrects in the eye images stay square to the image, so they rolled with head roll.
+HP bars were on the panel at game-screen positions ("random space on the stage").
+Both are now world-sprite quads (`xr_layer.md`).

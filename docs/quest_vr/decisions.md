@@ -128,3 +128,30 @@ at Mario it overlapped him and, facing the LOCAL origin, sat at a diagonal. It
 faces room +z, has twice the panel's scale (`gXrHudPartyWidth` 1.28), and moves
 with the stage when the battle camera pans. **Why:** owner: "it seems like it's
 supposed to be like a projector … attached to the front left of the stage".
+
+### 2026-11-01 — Transitions on the picture plane, theater on the panel
+
+Screen overlays (fades, iris/Mario/star wipes, battle swirl, darkness stencils) are
+drawn on the picture plane: over the stage like the TV they cover, not over the
+whole view. The file-select theater (curtains) goes on the steady panel around the
+file-select windows. **Why:** in the eye images they were head-locked, and shapes
+at the same pixel in both eyes (asymmetric fovs) were seen double; the owner asked
+for the border "to be the main menu". Trade-off accepted: a fade covers only what
+the game camera shows, not scene parts outside that frame or the UI layers.
+`OVERLAY_BLUR` and the battle swirl's previous-frame blur are left out (they sample
+an eye image).
+
+### 2026-11-01 — Tattle close-up with its window on the battle-menu layer
+
+`CAM_TATTLE` (not a noted camera) and the `EFFECT_TATTLE_WINDOW` frame are drawn
+into the party layer: a flat picture in its frame, not a stereo view. **Why:** in
+the eye images both were head-locked; owner: the picture "looks good".
+
+### 2026-11-01 — World sprites as quads in the room
+
+The target hand and enemy HP bars draw into a fourth UI framebuffer and are each
+shown on their own quad at their world anchor, sized like the game shows them
+against the scene. The hand faces the head; HP bars face the stage front (room +z)
+like the battle menus. **Why:** texture rectangles in the eye images can't rotate,
+so they rolled with the head; HP bars facing the head swung under their enemy when
+the owner moved. Owner: "looks perfect".

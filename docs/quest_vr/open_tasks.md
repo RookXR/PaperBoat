@@ -43,11 +43,17 @@ table in `README.md`.
 - [ ] **End-of-battle star-point banner** (owner chose option 1, 2026-11-01): the
       "N Star Points" banner is 3D virtual entities (`EVS_ShowStarpoints`,
       `level_up.c`) sliding from x -278 through the middle and out right; with no TV
-      frame the room view shows the whole trip. Hide them in the room view while
-      outside what the game camera shows.
-- [ ] Enemy HP bars and other `get_screen_coords` UI (status icons, msg_api,
-      encounter) land on the steady panel at game-screen positions; make them world
-      sprites like the target hand when they matter.
+      frame the room view shows the whole trip. Implemented (committed 2026-11-01:
+      `port_virtual_entity_set_framed`, skipped while off the game camera's screen
+      in the room view); **not yet confirmed on device by the owner**.
+- [x] Enemy HP bars as world sprites (2026-11-01): stage-facing quads under each
+      enemy. Other `get_screen_coords` UI (status icons, msg_api, encounter) still
+      lands on the steady panel at game-screen positions; same treatment if they matter.
+- [x] Screen overlays (fades, wipes, battle swirl), file-select theater, tattle
+      close-up + frame off the eye images (2026-11-01).
+- [ ] `OVERLAY_BLUR` (prev-frame motion blur: Kammy, Mega Quake, slow-blur
+      transition) still draws in the eye images and samples the other eye's image
+      (one shared prev-frame mirror). Fix: a mirror per eye, or skip it in the room view.
 - [ ] Speech bubbles on the picture plane are only exact at the look-at depth, and
       the plane follows the battle camera's zoom. Owner: good enough so far.
 - [ ] **Fixed "dollhouse" camera per map** as a toggle (owner's choice "both"):

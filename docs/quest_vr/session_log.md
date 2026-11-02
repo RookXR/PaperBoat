@@ -116,3 +116,28 @@ of this session: check `git log rookxr/quest-xr..HEAD` (PaperBoat) and
 **Next:** hide the end-of-battle star-point banner while it's outside the game
 camera's view (owner chose this, in progress); then enemy HP bars as world sprites
 if wanted; then the dollhouse camera (`open_tasks.md`).
+
+---
+
+## 2026-11-01 — UI polish: theater, transitions, tattle, world sprites
+
+**Done** (all verified on device by the owner)
+- File-select theater (`render_curtains`) on the steady panel around the menu.
+  Owner: "the curtains look good for the main menu".
+- Screen overlays on the picture plane; battle swirl without its prev-frame blur
+  in the room view (it read the other eye's image). Owner: "fades are much more
+  comfortable".
+- Tattle: `CAM_TATTLE` render and the `fx_tattle_window` frame on the battle-menu
+  layer. Owner: title picture "looks great".
+- Enemy HP bars as world sprites; all world sprites (hand, HP bars) now quads in
+  the room from a fourth UI framebuffer, upright (no roll with the head). HP bars
+  face the stage front so they don't swing when the head moves. Owner: "looks perfect".
+- Committed the previous session's star-point banner hiding with it (not yet
+  confirmed on device).
+
+**State at end of session**
+- Committed on `quest-xr`, not pushed (libultraship unchanged).
+- Installed APK = this build.
+
+**Next:** confirm the star-point banner; `OVERLAY_BLUR` per-eye; other
+`get_screen_coords` UI if it matters; then the dollhouse camera (`open_tasks.md`).

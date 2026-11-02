@@ -111,27 +111,39 @@ range's framebuffer. What goes where:
 | workers/hud elements back UI, game-mode back UI (field status bar, field menus), windows (field), CAM_HUD pass, front UI, game-mode front UI | `PORT_XR_HUD_PANEL` | steady panel above/behind the stage, facing the LOCAL origin (`HudPanelPose`) |
 | battle menus (`btl_draw_ui` minus status bar), windows during battle | `PORT_XR_HUD_PARTY` | constant-scale "projector screen" facing room +z; its screen point (left edge, y 228 = foot of the menu wheel) sits at stage point (-260, 0, 60) mapped into the room like the scene, plus the offsets (`HudAnchoredLayer`) |
 | `render_messages` (all three call sites) | `PORT_XR_HUD_PLANE` | the frame camera's picture plane: through its look-at point, facing it, spanning exactly what it shows there (`HudPlaneFromCamera`), so bubbles sit over the speaker |
-| interact prompts, `render_effects_UI` (damage numbers), screen overlays, curtains | none | stay in the eye images: the first two are 3D objects at world positions and get the room matrices; overlays/curtains cover the view |
+| `render_curtains` (file-select theater) | `PORT_XR_HUD_PANEL` | around the file-select windows |
+| screen overlays back/front (`xr_render_screen_overlay`, except `OVERLAY_BLUR`) | `PORT_XR_HUD_PLANE` | fades and wipes over the stage; the battle swirl skips its prev-frame blur in the room view |
+| `CAM_TATTLE` render (`render_frame` loop) and the `EFFECT_TATTLE_WINDOW` UI effect | `PORT_XR_HUD_PARTY` | tattle close-up in its frame on the battle-menu layer |
+| interact prompts, other `render_effects_UI` (damage numbers), `OVERLAY_BLUR` | none | stay in the eye images: 3D objects at world positions (room matrices); the blur samples an eye image |
 
-**Framebuffers.** Three Fast3D framebuffers, `CreateFrameBuffer(320, 240, 320, 240,
+**Framebuffers.** Four Fast3D framebuffers (the three layers + world sprites), `CreateFrameBuffer(320, 240, 320, 240,
 resize=1)`: storage follows the game framebuffer (1920×1080) and the layout is the
 game screen's, full 16:9 width (this port stretches the status bar to the widescreen
 edges; a 4:3 crop cut off the coins). Kept non-inverted every pair
 (`KeepHudUpright`, see `known_issues.md`). Cleared to (0,0,0,0) before each eye
 (both eyes draw them). On the right eye's swap `CopyHudImage` copies them into
-thirds of one 1280×2160 swapchain; `EndFrame` adds one quad per layer after the
-projection layer (premultiplied alpha; quads always draw over the scene).
+quarters of one 1280×2880 swapchain; `EndFrame` adds one quad per layer after the
+projection layer, then the sprite quads (premultiplied alpha; quads always draw
+over the scene).
 
-**World sprites** (the battle target hand). `select_target.c` anchors the hand's hud
-element to the target's world position and the screen position the game derived;
-`hud_element_draw_rect` brackets the element's draw. Inside a redirected range the
-brackets become `G_RESETFB` / `G_SETFB` back, so the hand draws into the eye images.
-Per eye (`port_xr_eye_replacements`), its texture rectangles (as built, restored
-each eye) are moved to where that eye sees the anchor and scaled by eye-vs-game
-pixels per world unit at the anchor (`ShiftSprite`, `TransformSpriteRects`): it sits
-at the enemy's depth with the game's size against the scene.
+**World sprites** (the battle target hand, enemy HP bars). `select_target.c` anchors
+the hand's hud element (`port_xr_anchor_hud_element`), `btl_draw_enemy_health_bars`
+each bar (`port_xr_anchor_stage_sprite`, keyed by the actor) to a world point and
+the screen position the game derived; the draw is bracketed and reported with
+`port_xr_note_world_sprite`. In a room-view pair the brackets become `G_SETFB`
+sprite framebuffer / back to the range's framebuffer, so sprites draw unshifted at
+their game-screen spot. In eye 0 `SpriteQuadFor` takes each sprite's bounding box
+(`SpriteBounds`: `G_TEXRECT_WIDE`, `G_TEXRECT`, `G_FILLRECT`) as a sub-rectangle of
+the sprite quarter, sized at the game's meters per pixel at the anchor (10 world
+units up, `gXrHudSpriteScale`), placed so the anchor's screen point sits on the
+anchor mapped into the room; upright, facing the head (hand) or room +z (stage
+sprites). Log: `Sprite quad: anchor … box … -> w x h m at …` (~10 s). With
+`gXrHud` 0 the old per-eye path remains (`ShiftSprite`, `TransformSpriteRects`
+moves/scales texrects and fill rects in the eye images).
 
-**Not handled yet:** enemy HP bars (`btl_draw_enemy_health_bars`, `get_screen_coords`
-→ hud elements on the panel at game-screen positions); other `get_screen_coords`
-users (status icons, msg_api, encounter); the end-of-battle star-point banner (3D
-virtual entities sliding in from off-stage, see `open_tasks.md`).
+**Star-point banner:** its virtual entities are marked
+(`port_virtual_entity_set_framed`, `level_up.c`) and skipped in the room view while
+off the game camera's screen (`port_xr_room_view_active`).
+
+**Not handled yet:** other `get_screen_coords` users (status icons, msg_api,
+encounter); `OVERLAY_BLUR` (see `known_issues.md`).
